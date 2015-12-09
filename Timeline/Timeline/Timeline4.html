@@ -1,0 +1,523 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title></title>
+    <script src="Scripts/jquery-2.1.1.min.js"></script>
+    <style>
+        #Timeline {
+            /*border: 1px solid black;*/
+            overflow: hidden;
+        }
+
+        .TimelineText {
+            font: 12px Arial;
+            font-size-adjust: none;
+            font-stretch: normal;
+            text-anchor: middle;
+        }
+
+        #SVGContainer{
+            width: 840px;
+            height: 70px;
+            border: 1px solid red;
+        }
+    </style>
+</head>
+<body>
+    1 hours
+    <br />
+    <div id="SVGContainer"></div>
+    <input type="text" id="MouseDate" style="width: 350px;" value="" />
+    <input type="text" id="CueDate" style="width: 350px;" value="" />
+    <input type="button" id="early" value="early" />
+    <input type="button" id="later" value="later" />
+    <input type="button" id="update" value="update records" />
+    <script>
+        // html element
+        var svgNS = "http://www.w3.org/2000/svg", cuePoint;
+        var svg, gRuler, gEvent, gRecord, gCuePoint;
+
+        // 動畫
+        var aniViewBoxHandle = 0, aniCueHandle = 0;
+        var viewBoxX = 0, cuePathX = 0;
+        var fps = 60;
+        var now;
+        var then = Date.now();
+        var interval = 1000 / fps;
+        var delta;
+
+        // data
+        var start = new Date("2015/1/5 04:58:00"),
+            end = new Date("2015/1/5 06:02:00");
+        // 1420403880000 2015/1/5 04:38:00
+        // 1420405200000 2015/1/5 05:00:00
+        // 1420406400000 2015/1/5 05:20:00
+        // 1420407000000 2015/1/5 05:30:00
+        var records = [{ "start": 1420302880000, "end": 1420403780000 }, { "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }];
+        var events = [{ "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }];
+        var cue = 1420406400000;
+
+        // test
+        var isDragCuePoint = false;
+        var cueOriginalX;
+        var cueOriginalRelativeX;
+        var cuePath;
+        var moveX = 0;
+        var clickX = 0, lastMoveX = 0;
+        var svgWidth = 0;
+        var svgHeight = 0;
+        var second2pixel = 0; // 1毫秒 幾 Pixel，換算用
+        var pixel2second = 0; // 1Pixel 幾 毫秒，換算用
+        var theRateOfPixelToSeconds = 6;    // the rate of pixel to seconds seconds/pixel 一個Pixel等於6秒
+
+
+        $(document).ready(function () {
+            $("#early").click(function () {
+                early();
+            });
+            $("#later").click(function () {
+                later();
+            });
+            $("#update").click(function () {
+                updateRecords();
+            });
+            createTimeline(start, end);
+
+            // test cueTo
+            testCueTo();
+
+        });
+
+
+        function testCueTo() {
+            setInterval("add1Second();cueToSlowly(new Date(cue));", 1000);
+        }
+        function early() {
+            doEarlyAni();
+        }
+
+        function later() {
+            doLaterAni();
+        }
+
+        function updateRecords() {
+            records = [{ "start": 1420302880000, "end": 1420403780000 }, { "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }, { "start": 1420407000000, "end": 1420408000000 }];
+            createRecord();
+        }
+        function cueToSlowlyEffect(destX) {
+            var d = cuePoint.getAttributeNS(null, "d");
+            var cuePathX = parseInt(d.split(" ")[1]);
+            if (cuePathX > destX) {
+                cuePathX = cuePathX - 3;
+                if (cuePathX < destX)
+                    cuePathX = destX;
+            }
+            else {
+                cuePathX = cuePathX + 3;
+                //console.log(cuePathX);
+                if (cuePathX > destX)
+                    cuePathX = destX;
+            }
+            //console.log(cuePathX + " " + destX);
+            cuePoint.setAttributeNS(null, "d", "M " + cuePathX + " 0 V 44");
+
+            // stop animation
+            if (cuePathX == destX) {
+                clearInterval(aniCueHandle);
+                aniCueHandle = 0;
+            }
+
+        }
+        function doEarlyAni() {
+            aniViewBoxHandle = window.requestAnimationFrame(doEarlyAni);
+
+            now = Date.now();
+            delta = now - then;
+
+            if (delta > interval) {
+                then = now - (delta % interval);
+
+                svg.setAttributeNS(null, "viewBox", viewBoxX + " 0 "+ svgWidth +" 70");
+                viewBoxX = viewBoxX - 20;
+
+                // stop animation
+                if (viewBoxX <= -(svgWidth)) {
+                    window.cancelAnimationFrame(aniViewBoxHandle);
+                    start.setHours(start.getHours() - 1);
+                    end.setHours(end.getHours() - 1);
+
+                    viewBoxX = 0;
+                    clearSVGContent();
+                    createSVGG();
+                    createRuler();
+                    createRecord();
+                    createEvent();
+                    createCuepoint();
+                    svg.setAttributeNS(null, "viewBox", "0 0 " + svgWidth + " 70");
+                }
+            }
+        }
+
+        function doLaterAni() {
+            aniViewBoxHandle = window.requestAnimationFrame(doLaterAni);
+
+            now = Date.now();
+            delta = now - then;
+
+            if (delta > interval) {
+                then = now - (delta % interval);
+                console.log(viewBoxX);
+                svg.setAttributeNS(null, "viewBox", viewBoxX + " 0 "+svgWidth+" 70");
+                viewBoxX = viewBoxX + 20;
+                
+                // stop animation
+                if (viewBoxX >= svgWidth) {
+                    window.cancelAnimationFrame(aniViewBoxHandle);
+                    start.setHours(start.getHours() + 1);
+                    end.setHours(end.getHours() + 1);
+
+                    viewBoxX = 0;
+                    clearSVGContent();
+                    createSVGG();
+                    createRuler();
+                    createRecord();
+                    createEvent();
+                    createCuepoint();
+                    svg.setAttributeNS(null, "viewBox", "0 0 " + svgWidth + " 70");
+                }
+
+            }
+        }
+
+        function createTimeline(start, end) {
+            svgWidth = $("#SVGContainer").width();
+            svgHeight = $("#SVGContainer").height();
+            second2pixel = (60 * 1000) / (svgWidth / 64); // 1毫秒幾個Pixel
+            pixel2second = (60 / (svgWidth / 64)) * 1000; // 1Pixel幾毫秒
+            
+            console.log(second2pixel + " " + pixel2second);
+            createSVG();
+            createSVGG();
+            createRuler();
+            createRecord();
+            createEvent();
+            createCuepoint();
+        }
+
+        function createSVG() {
+            // svg
+            svg = document.createElementNS(svgNS, "svg");
+            svg.setAttributeNS(null, "id", "Timeline");
+            svg.setAttributeNS(null, "width", svgWidth);
+            svg.setAttributeNS(null, "height", svgHeight);
+            svg.setAttributeNS(null, "version", "1.1");
+            svg.setAttributeNS(null, "viewBox", "0 0 " + svgWidth + " " + svgHeight);
+            document.getElementById("SVGContainer").appendChild(svg);
+
+        }
+
+        function createSVGG() {
+            //svg g Ruler
+            gRuler = document.createElementNS(svgNS, "g");
+            svg.appendChild(gRuler);
+
+            //svg g Record
+            gRecord = document.createElementNS(svgNS, "g");
+            svg.appendChild(gRecord);
+
+            //svg g Event
+            gEvent = document.createElementNS(svgNS, "g");
+            svg.appendChild(gEvent);
+
+            //svg g CuePoint
+            gCuePoint = document.createElementNS(svgNS, "g");
+            svg.appendChild(gCuePoint);
+        }
+        function createRuler() {
+            // Horizontal Ruler
+            createPath(gRuler, "none", "#0372b0", "2", "M -" + svgWidth + " 44 H " + (svgWidth * 2));
+
+            // Vertical Ruler
+            var index = new Date(start.getTime() - (60 * 60 * 1000) - (4 * 60 * 1000));
+            
+            for (var i = -parseInt(svgWidth); i <= (svgWidth*2); i = i + (svgWidth/64)) {
+
+                if (i != 0 && i != parseInt(svgWidth)) { // 最左邊和最右邊都不要畫
+                    if (index.getTime() % 900000 == 0) { // 15 mins
+                        createPath(gRuler, "none", "#0372b0", "1", "M " + i + " 35 V 58");
+                        createText(gRuler, "none", "#0372b0", i, "67", index.getHours().padLeft() + ":" + index.getMinutes().padLeft());
+                    }
+                    else if (index.getTime() % 300000 == 0) // 5 mins
+                        createPath(gRuler, "none", "#0372b0", "1", "M " + i + " 44 V 53");
+                    else
+                        createPath(gRuler, "none", "#0372b0", "1", "M " + i + " 44 V 49");
+                }
+                index.setMilliseconds(index.getMilliseconds() + 60000); // + 1 min
+            }
+
+
+
+        }
+
+        function createRecord() {
+            clearRecord();
+
+            for (var i = 0; i < records.length; i++) {
+                var rectStartX = ((records[i].start - start.getTime()) / second2pixel);
+                var rectEndX = ((records[i].end - start.getTime()) / second2pixel);
+                //<rect style="opacity: 1;" opacity="1" fill="#5acaed" fill-opacity="0.5" stroke="none" x="-2655.1" y="37" width="3243.61" height="6" rx="0" ry="0" r="0" />
+                var rect = document.createElementNS(svgNS, "rect");
+                rect.setAttributeNS(null, "fill", "#5acaed");
+                rect.setAttributeNS(null, "fill-opacity", "0.5");
+                rect.setAttributeNS(null, "stroke", "none");
+                rect.setAttributeNS(null, "x", rectStartX);
+                rect.setAttributeNS(null, "y", "37");
+                rect.setAttributeNS(null, "width", rectEndX - rectStartX);
+                rect.setAttributeNS(null, "height", "6");
+                rect.setAttributeNS(null, "style", "cursor: pointer;");
+                gRecord.appendChild(rect);
+                //<rect style="cursor: pointer; opacity: 1;" opacity="1" fill="#000000" fill-opacity="0" stroke="none" x="-2655.1" y="4" width="3243.61" height="40" rx="0" ry="0" r="0" />
+                var rect2 = document.createElementNS(svgNS, "rect");
+                rect2.setAttributeNS(null, "fill", "#5acaed");
+                rect2.setAttributeNS(null, "fill-opacity", "0");
+                rect2.setAttributeNS(null, "stroke", "none");
+                rect2.setAttributeNS(null, "x", rectStartX);
+                rect2.setAttributeNS(null, "y", "4");
+                rect2.setAttributeNS(null, "width", rectEndX - rectStartX);
+                rect2.setAttributeNS(null, "height", "40");
+                rect2.setAttributeNS(null, "style", "cursor: pointer;");
+                rect2.onmousemove = function (e) {
+                    var relativeX;
+                    if (e.offsetX == undefined)
+                        relativeX = e.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+                    else
+                        relativeX = e.offsetX;
+
+                    var mouseDate = new Date(start.getTime() + (relativeX * pixel2second));
+                    $("#MouseDate").val("record " + mouseDate.toString());
+                    //console.log(cuepoint.toString());
+
+                };
+                rect2.onclick = function (e) {
+                    var relativeX;
+                    if (e.offsetX == undefined)
+                        relativeX = e.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+                    else
+                        relativeX = e.offsetX;
+
+                    var mouseDate = new Date(start.getTime() + (relativeX * pixel2second));
+
+                    cueToSlowly(mouseDate);
+                };
+                gRecord.appendChild(rect2);
+            }
+        }
+
+        function clearRecord() {
+            while (gRecord.lastChild) {
+                gRecord.removeChild(gRecord.lastChild);
+            }
+        }
+        function createEvent() {
+            clearEvent();
+
+            for (var i = 0; i < events.length; i++) {
+                
+                var rectStartX = ((events[i].start - start.getTime()) / second2pixel);
+                //var rectEndX = ((events[i].end - start.getTime()) / 6000);
+                //<rect style="cursor: pointer;" fill="#d875ff" stroke="none" transform="matrix(1 0 0 1 891 3)" x="0" y="0" width="6" height="32" rx="0" ry="0" r="0" />
+                var rect = document.createElementNS(svgNS, "rect");
+                rect.setAttributeNS(null, "fill", "#d875ff");
+                rect.setAttributeNS(null, "fill-opacity", "0.5");
+                rect.setAttributeNS(null, "stroke", "none");
+                rect.setAttributeNS(null, "x", rectStartX);
+                rect.setAttributeNS(null, "y", "3");
+                rect.setAttributeNS(null, "width", "6");
+                rect.setAttributeNS(null, "height", "32");
+                rect.setAttributeNS(null, "style", "cursor: pointer;");
+
+                rect.onmousemove = function (e) {
+                    var relativeX;
+                    if (e.offsetX == undefined)
+                        relativeX = e.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+                    else
+                        relativeX = e.offsetX;
+
+                    var mouseDate = new Date(start.getTime() + (relativeX * pixel2second));
+                    $("#MouseDate").val("event " + mouseDate.toString());
+                };
+                rect.onclick = function (e) {
+                    var relativeX;
+                    if (e.offsetX == undefined)
+                        relativeX = e.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+                    else
+                        relativeX = e.offsetX;
+
+                    var mouseDate = new Date(start.getTime() + (relativeX * pixel2second));
+
+                    cueToSlowly(mouseDate);
+                };
+                gEvent.appendChild(rect);
+            }
+        }
+
+        function clearEvent() {
+            while (gEvent.lastChild) {
+                gEvent.removeChild(gEvent.lastChild);
+            }
+        }
+        function createCuepoint() {
+            var cueDate = new Date(cue);
+            var pathX = ((cue - start.getTime()) / second2pixel);
+
+            // <path id="CuePoint" style="cursor: ew-resize;" fill="#ff0000" stroke="#ff0000" stroke-width="2" transform="matrix(1 0 0 1 754.502 0)" d="M 0 0 V 44" />
+            cuePoint = document.createElementNS(svgNS, "path");
+            cuePoint.setAttributeNS(null, "id", "CuePoint");
+            cuePoint.setAttributeNS(null, "fill", "#ff0000");
+            cuePoint.setAttributeNS(null, "stroke", "#ff0000");
+            cuePoint.setAttributeNS(null, "stroke-width", "2");
+            cuePoint.setAttributeNS(null, "d", "M " + pathX + " 0 V 44");
+            cuePoint.setAttributeNS(null, "style", "cursor: ew-resize");
+            cuePoint.onmousedown = function (event) {
+                isDragCuePoint = true;
+                if (event.offsetX == undefined)
+                    cueOriginalRelativeX = event.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+                else
+                    cueOriginalRelativeX = event.offsetX;
+
+                cueOriginalX = getPageX(event);
+
+                return false; // 取消 browser 內建 drag element 功能
+            };
+
+
+            gCuePoint.appendChild(cuePoint);
+
+
+            $("#CueDate").val(cueDate.toString());
+
+        }
+
+        function add1Second() {
+            if (aniCueHandle == 0 && isDragCuePoint == false) { // 沒有動畫正在進行 and 沒有正在拖CuePoint
+                cue = cue + 1000;
+            }
+        }
+
+
+        function cueToSlowly(destDate) {
+            if (aniCueHandle == 0 && isDragCuePoint == false) { // 沒有動畫正在進行 and 沒有正在拖CuePoint
+                cue = destDate.getTime();
+                var destX = ((cue - start.getTime()) / second2pixel); // 換算成 pixel
+                var d = cuePoint.getAttributeNS(null, "d");
+                var originalX = parseInt(d.split(" ")[1]);
+
+                if (destX <= svgWidth && destX >= 0) { // cue 到 0~640
+                    // 如果原來的 CuePoint 太遠，將 CuePoint 的 path 調近，以解決動畫跑太久
+                    if (originalX > svgWidth)
+                        originalX = svgWidth+5;
+                    if (originalX < 0)
+                        originalX = -5;
+                    cuePoint.setAttributeNS(null, "d", "M " + originalX + " 0 V 44");
+                }
+                else { // cue 超出 0~640
+                    //if (destX > 640)
+                    //    later();
+                    //else
+                    //    early();
+                }
+
+                // 動畫
+                aniCueHandle = setInterval("cueToSlowlyEffect(" + destX + ")", 1);
+
+                $("#CueDate").val(destDate.toString());
+            }
+        }
+
+        function dragTo(deltaX) {
+            var newX = cueOriginalRelativeX + deltaX;
+            //console.log(cue);
+            cue = start.getTime() + (newX * pixel2second); // 1 pixel = 6 秒 * 1000 mini secs
+            //console.log(newX);
+            cuePoint.setAttributeNS(null, "d", "M " + newX + " 0 V 44");
+            var destDate = new Date(cue);
+            $("#CueDate").val(destDate.toString());
+        }
+        function clearSVGContent() {
+            while (svg.lastChild) {
+                svg.removeChild(svg.lastChild);
+            }
+        }
+
+        function createPath(container, fill, stroke, strokeWidth, d) {
+            var path = document.createElementNS(svgNS, "path");
+            path.setAttributeNS(null, "fill", fill);
+            path.setAttributeNS(null, "stroke", stroke);
+            path.setAttributeNS(null, "stroke-width", strokeWidth);
+            path.setAttributeNS(null, "d", d);
+            container.appendChild(path);
+
+            //<animate attributeName="fill" to="rgb(0,255,0)" begin="mouseover" dur="1s" additive="sum" fill="freeze"/>
+            var animate = document.createElementNS(svgNS, "animate");
+            animate.setAttributeNS(null, "attributeName", "transform");
+            animate.setAttributeNS(null, "to", "tran");
+            animate.setAttributeNS(null, "begin", "0s");
+            animate.setAttributeNS(null, "dur", "2s");
+            animate.setAttributeNS(null, "additive", "sum");
+            animate.setAttributeNS(null, "fill", "freeze");
+            container.appendChild(animate);
+        }
+
+        function createText(container, fill, stroke, x, y, content) {
+            //<text class="TimelineText" fill="#076dab" stroke="none" x="884.0278" y="65.3">6:15 pm</text>
+            var text = document.createElementNS(svgNS, "text");
+            text.setAttributeNS(null, "fill", fill);
+            text.setAttributeNS(null, "class", "TimelineText");
+            text.setAttributeNS(null, "stroke", stroke);
+            text.setAttributeNS(null, "x", x);
+            text.setAttributeNS(null, "y", y);
+            text.textContent = content;
+            container.appendChild(text);
+        }
+
+
+        document.onmousemove = function (event) {
+            if (isDragCuePoint) {
+                var nowX = getPageX(event);
+                var deltaX = nowX - cueOriginalX;
+                dragTo(deltaX);
+
+                //console.log(deltaX);
+            }
+
+        };
+        document.onmouseup = function (event) {
+            isDragCuePoint = false;
+            //console.log(isDragCuePoint);
+        };
+
+        Number.prototype.padLeft = function (base, chr) {
+            var len = (String(base || 10).length - String(this).length) + 1;
+            return len > 0 ? new Array(len).join(chr || '0') + this : this;
+        }
+
+        function getPageX(event) {
+            var dot, eventDoc, doc, body, pageX;
+            event = event || window.event; // IE-ism
+
+            if (event.pageX == null && event.clientX != null) {
+                eventDoc = (event.target && event.target.ownerDocument) || document;
+                doc = eventDoc.documentElement;
+                body = eventDoc.body;
+
+                event.pageX = event.clientX +
+                  (doc && doc.scrollLeft || body && body.scrollLeft || 0) -
+                  (doc && doc.clientLeft || body && body.clientLeft || 0);
+            }
+            return event.pageX;
+        }
+
+
+    </script>
+</body>
+</html>

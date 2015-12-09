@@ -1,0 +1,1268 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title></title>
+    <style>
+        #Timeline {
+            /*border: 1px solid black;*/
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        .TimelineText {
+            font: 12px Arial;
+            font-size-adjust: none;
+            font-stretch: normal;
+            text-anchor: middle;
+        }
+
+
+        #SVGContainer {
+            width: 640px;
+            /*background-color: pink;*/
+            /*position: absolute;
+            left: 200px;
+            top: 100px;*/
+        }
+    </style>
+    <script src="Scripts/jquery-2.1.1.min.js"></script>
+</head>
+<body>
+    <div id="SVGContainer"></div>
+    <input type="text" id="MouseDate" style="width: 350px;" value="" />
+    <input type="text" id="CueDate" style="width: 350px;" value="" />
+    <br />
+    <input type="button" id="early" value="early" />
+    <input type="button" id="later" value="later" />
+    <input type="button" id="min" value="5 min" />
+    <input type="button" id="hour" value="1 hour" />
+    <input type="button" id="day" value="1 day" />
+    <input type="button" id="now" value="now" />
+    <script>
+        // html element
+        var svgNS = "http://www.w3.org/2000/svg", cuePoint;
+        var svg, gRuler, gEvent, gRecord, gCuePoint;
+
+        // 動畫
+        var isAnimation = false;
+        var aniViewBoxHandle = 0, aniCueHandle = 0;
+        var viewBoxX = 0, cuePathX = 0;
+        var fps = 60;
+        var now;
+        var then = Date.now();
+        var interval = 1000 / fps;
+        var delta;
+
+        // data
+        var cue = new Date();
+        var oldStart,
+            start = new Date(cue.getTime() - 40 * 60 * 1000),
+            end = new Date(cue.getTime() + 32 * 60 * 1000);
+
+        var scale; // 0:5min 1:1hour 2:24hour
+        // 1420403880000 2015/1/5 04:38:00
+        // 1420405200000 2015/1/5 05:00:00
+        // 1420406400000 2015/1/5 05:20:00
+        // 1420407000000 2015/1/5 05:30:00
+        var records = [{ "start": 1420302880000, "end": 1420403780000 }, { "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }];
+        var events = [{ "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }, { "start": 1420408000000, "end": 1420408000000 }, { "start": 1420409000000, "end": 1420410000000 }];
+
+
+        // test
+        var isDragCuePoint = false;
+        var cueOriginalX;
+        var cueOriginalRelativeX;
+        var cuePath;
+        var moveX = 0;
+        var clickX = 0, lastMoveX = 0;
+        var svgWidth = 0;
+        var theRateDivisionToPixel, theRatePixelToSecond, theOldRatePixelToSecond;
+        var pathLUnit, pathMUnit, pathSUnit;
+        var monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        var rulerCollection = [], recordCollection = [], eventCollection = [];
+
+        $(document).ready(function () {
+            $("#early").click(function () {
+                early();
+            });
+            $("#later").click(function () {
+                later();
+            });
+            $("#min").click(function () {
+                minScale();
+            });
+            $("#hour").click(function () {
+                hourScale();
+            });
+            $("#day").click(function () {
+                dayScale();
+            });
+            $("#now").click(function () {
+                moveRuler(new Date());
+            });
+
+            createTimeline();
+        });
+
+        function createFirstEvent() {
+            var x1, x2, t, w1, w2;
+
+            for (var i = 0; i < events.length; i++) {
+                // (60秒 * 1000毫秒) / 10pixel = 6000
+                var rectStartX = formatFloat((events[i].start - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                var rectEndX = formatFloat((events[i].end - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                w1 = FloatSubtraction(rectEndX,rectStartX);
+                w2 = w1;
+
+                //<rect style="cursor: pointer;" fill="#d875ff" stroke="none" transform="matrix(1 0 0 1 891 3)" x="0" y="0" width="6" height="32" rx="0" ry="0" r="0" />
+                var rect = document.createElementNS(svgNS, "rect");
+                rect.setAttributeNS(null, "fill", "#d875ff");
+                rect.setAttributeNS(null, "fill-opacity", "0.5");
+                rect.setAttributeNS(null, "stroke", "none");
+                rect.setAttributeNS(null, "x", "0");
+                rect.setAttributeNS(null, "y", "3");
+                rect.setAttributeNS(null, "width", "6");
+                rect.setAttributeNS(null, "height", "32");
+                rect.setAttributeNS(null, "style", "cursor: pointer;");
+                rect.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + rectStartX + " 0)");
+                rect.setAttributeNS(null, "x1", rectStartX);
+                rect.setAttributeNS(null, "x2", rectStartX);
+                rect.setAttributeNS(null, "w1", w1);
+                rect.setAttributeNS(null, "w2", w2);
+                rect.setAttributeNS(null, "tS", events[i].start);
+                rect.setAttributeNS(null, "tE", events[i].end);
+
+                rect.onmousemove = function (e) {
+                    var relativeX = FloatSubtraction(e.pageX , $("#Timeline").offset().left);
+
+                    var mouseDate = new Date(start.getTime() + relativeX * theRatePixelToSecond * 1000);
+                    $("#MouseDate").val("event " + mouseDate.toString());
+                };
+                rect.onclick = function (e) {
+                    var relativeX = FloatSubtraction(e.pageX, $("#Timeline").offset().left);  // 相容 Firefox
+
+                    cue = start.getTime() + relativeX * theRatePixelToSecond * 1000;
+                    createNewCuepoint();
+                    execAnimate();
+
+                    var mouseDate = new Date(start.getTime() + relativeX * theRatePixelToSecond * 1000);
+                    $("#CueDate").val("event " + mouseDate.toString());
+                };
+                gEvent.appendChild(rect);
+                eventCollection.push(rect);
+            }
+        }
+
+        function createNewEvent() {
+            var x1, x2, tS, tE, w1, w2, rectStartX, rectEndX;
+            //var newBaseStartX = ((start.getTime() - oldStart.getTime()) / 1000 / theOldRatePixelToSecond);
+
+            // 舊的 Record
+            for (var i = 0; i < eventCollection.length; i++) {
+                var item = eventCollection[i];
+                tS = item.getAttributeNS(null, "tS");
+                tE = item.getAttributeNS(null, "tE");
+                rectStartX = formatFloat((tS - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                rectEndX = formatFloat((tE - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                x2 = rectStartX;
+                w2 = FloatSubtraction(rectEndX, rectStartX);
+
+                item.setAttributeNS(null, "x2", x2);
+                item.setAttributeNS(null, "w2", w2);
+            }
+
+        }
+
+        function createFirstRecord() {
+            var x1, x2, t;
+
+            // 新的 Record
+            for (var i = 0; i < records.length; i++) {
+                // (60秒 * 1000毫秒) / 10pixel = 6000
+                var rectStartX = formatFloat((records[i].start - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                var rectEndX = formatFloat((records[i].end - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                var w1 = FloatSubtraction(rectEndX, rectStartX);
+                var w2 = w1;
+                //console.log(rectStartX + "," + rectEndX);
+
+                //<rect style="opacity: 1;" opacity="1" fill="#5acaed" fill-opacity="0.5" stroke="none" x="-2655.1" y="37" width="3243.61" height="6" rx="0" ry="0" r="0" />
+                var rect = document.createElementNS(svgNS, "rect");
+                rect.setAttributeNS(null, "fill", "#5acaed");
+                rect.setAttributeNS(null, "fill-opacity", "0.5");
+                rect.setAttributeNS(null, "stroke", "none");
+                rect.setAttributeNS(null, "x", "0");
+                rect.setAttributeNS(null, "y", "37");
+                rect.setAttributeNS(null, "width", w1);
+                rect.setAttributeNS(null, "height", "6");
+                rect.setAttributeNS(null, "style", "cursor: pointer;");
+                rect.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + rectStartX + " 0)");
+                rect.setAttributeNS(null, "x1", rectStartX);
+                rect.setAttributeNS(null, "x2", rectStartX);
+                rect.setAttributeNS(null, "w1", w1);
+                rect.setAttributeNS(null, "w2", w2);
+                rect.setAttributeNS(null, "del", "0");
+                rect.setAttributeNS(null, "tS", records[i].start);
+                rect.setAttributeNS(null, "tE", records[i].end);
+
+                gRecord.appendChild(rect);
+                recordCollection.push(rect);
+
+                //<rect style="cursor: pointer; opacity: 1;" opacity="1" fill="#000000" fill-opacity="0" stroke="none" x="-2655.1" y="4" width="3243.61" height="40" rx="0" ry="0" r="0" />
+                var rect2 = document.createElementNS(svgNS, "rect");
+                rect2.setAttributeNS(null, "fill", "#5acaed");
+                rect2.setAttributeNS(null, "fill-opacity", "0");
+                rect2.setAttributeNS(null, "stroke", "none");
+                rect2.setAttributeNS(null, "x", "0");
+                rect2.setAttributeNS(null, "y", "4");
+                rect2.setAttributeNS(null, "width", w1);
+                rect2.setAttributeNS(null, "height", "40");
+                rect2.setAttributeNS(null, "style", "cursor: pointer;");
+                rect2.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + rectStartX + " 0)");
+                rect2.setAttributeNS(null, "x1", rectStartX);
+                rect2.setAttributeNS(null, "x2", rectStartX);
+                rect2.setAttributeNS(null, "w1", w1);
+                rect2.setAttributeNS(null, "w2", w2);
+                rect2.setAttributeNS(null, "del", "0");
+                rect2.setAttributeNS(null, "tS", records[i].start);
+                rect2.setAttributeNS(null, "tE", records[i].end);
+
+                rect2.onmousemove = function (e) {
+                    var relativeX = FloatSubtraction(e.pageX, $("#Timeline").offset().left);
+
+                    //console.log(relativeX);
+                    var mouseDate = new Date(start.getTime() + relativeX * theRatePixelToSecond * 1000);
+                    $("#MouseDate").val("record " + mouseDate.toString());
+                    //console.log(cuepoint.toString());
+
+                };
+                rect2.onclick = function (e) {
+                    var relativeX = FloatSubtraction(e.pageX,$("#Timeline").offset().left);  // 相容 Firefox
+
+                    cue = start.getTime() + relativeX * theRatePixelToSecond * 1000;
+                    createNewCuepoint();
+                    execAnimate();
+
+                    var destDate = new Date(cue);
+                    $("#CueDate").val(destDate.toString());
+                    //cueToSlowly(mouseDate);
+                };
+                gRecord.appendChild(rect2);
+                recordCollection.push(rect2);
+            }
+        }
+
+        function createNewRecord() {
+            var x1, x2, tS, tE, w1, w2, rectStartX, rectEndX;
+            //var newBaseStartX = ((start.getTime() - oldStart.getTime()) / 1000 / theOldRatePixelToSecond);
+
+            // 舊的 Record
+            for (var i = 0; i < recordCollection.length; i++) {
+                var item = recordCollection[i];
+                tS = item.getAttributeNS(null, "tS");
+                tE = item.getAttributeNS(null, "tE");
+                rectStartX = formatFloat((tS - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                rectEndX = formatFloat((tE - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                x2 = rectStartX;
+                w2 = FloatSubtraction(rectEndX, rectStartX);
+
+                item.setAttributeNS(null, "x2", x2);
+                item.setAttributeNS(null, "w2", w2);
+            }
+
+        }
+
+        function clearRecord() {
+            while (gRecord.lastChild) {
+                gRecord.removeChild(gRecord.lastChild);
+            }
+        }
+
+        function firstRuler() {
+            // 1 hour
+            scale = 1;
+            var now = new Date(1420406400000);
+            cue = now.getTime();
+
+            oldStart = new Date(cue);
+            oldStart.setMilliseconds(0);
+            oldStart.setSeconds(0);
+            oldStart.setMinutes(0);
+            oldStart.setMinutes(-6);
+
+            start = new Date(cue);
+            start.setMilliseconds(0);
+            start.setSeconds(0);
+            start.setMinutes(0);
+            start.setMinutes(-6);
+
+            end = new Date(cue);
+            end.setMilliseconds(0);
+            end.setSeconds(0);
+            end.setMinutes(66);
+
+
+            theRateDivisionToPixel = svgWidth / 72;
+            theOldRatePixelToSecond = (72 * 60) / svgWidth;
+            theRatePixelToSecond = (72 * 60) / svgWidth;
+
+            pathLUnit = 15 * 60 * 1000;
+            pathMUnit = 5 * 60 * 1000;
+            pathSUnit = 1 * 60 * 1000;
+
+
+            createFirstRuler();
+
+            if (cue >= start.getTime() && cue <= end.getTime())
+                createCuepoint();
+        }
+
+        function minScale() {
+            if (!isAnimation) {
+                if (scale != 0) {
+                    // 5 min
+                    scale = 0;
+
+                    oldStart = new Date(start.getTime());
+
+                    if (cue >= start.getTime() && cue <= end.getTime()) {
+                        start = new Date(cue);
+                        start.setMilliseconds(0);
+                        start.setSeconds(0);
+                        start.setMinutes(Math.floor(start.getMinutes() / 5) * 5, -30);
+
+                        end = new Date(cue);
+                        end.setMilliseconds(0);
+                        end.setSeconds(0);
+                        end.setMinutes(Math.floor(end.getMinutes() / 5) * 5 + 5, 30);
+                    }
+                    else {
+                        var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+
+                        start = new Date(tempMiddle - (3 * 60 * 1000));
+                        if (start.getSeconds() != 29) {
+                            start.setSeconds(-30);
+                        }
+                        end = new Date(start.getTime() + (6 * 60 * 1000));
+                    }
+
+                    theRateDivisionToPixel = svgWidth / 72;
+                    theOldRatePixelToSecond = theRatePixelToSecond;
+                    theRatePixelToSecond = (6 * 60) / svgWidth;
+
+                    pathLUnit = 60 * 1000;
+                    pathMUnit = 15 * 1000;
+                    pathSUnit = 5 * 1000;
+
+                    createNewRuler();
+                    createNewCuepoint();
+                    createNewRecord();
+                    createNewEvent();
+                    execAnimate();
+                }
+            }
+        }
+        function hourScale() {
+            if (!isAnimation) {
+                if (scale != 1) {
+                    // 1 hour
+                    scale = 1;
+
+                    oldStart = new Date(start.getTime());
+
+                    if ((cue >= start.getTime() && cue <= end.getTime())) {
+                        start = new Date(cue);
+                        start.setMilliseconds(0);
+                        start.setSeconds(0);
+                        start.setMinutes(0);
+                        start.setMinutes(-6);
+
+                        end = new Date(cue);
+                        end.setMilliseconds(0);
+                        end.setSeconds(0);
+                        end.setMinutes(66);
+                    }
+                    else {
+                        var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+                        start = new Date(tempMiddle);
+                        start.setMilliseconds(0);
+                        start.setSeconds(0);
+                        start.setMinutes(0);
+                        start.setMinutes(-6);
+
+                        end = new Date(tempMiddle);
+                        end.setMilliseconds(0);
+                        end.setSeconds(0);
+                        end.setMinutes(66);
+                    }
+                    //console.log(start + " " + end);
+                    theRateDivisionToPixel = svgWidth / 72;
+                    theOldRatePixelToSecond = theRatePixelToSecond;
+                    theRatePixelToSecond = (72 * 60) / svgWidth;
+
+                    pathLUnit = 15 * 60 * 1000;
+                    pathMUnit = 5 * 60 * 1000;
+                    pathSUnit = 1 * 60 * 1000;
+
+
+                    createNewRuler();
+                    createNewCuepoint();
+                    createNewRecord();
+                    createNewEvent();
+                    execAnimate();
+                }
+            }
+        }
+        function dayScale() {
+            if (!isAnimation) {
+                if (scale != 2) {
+                    // 24 hour
+                    scale = 2;
+
+                    oldStart = new Date(start.getTime());
+
+                    if (cue >= start.getTime() && cue <= end.getTime()) {
+                        start = new Date(cue);
+                        start.setMilliseconds(0);
+                        start.setSeconds(0);
+                        start.setMinutes(0);
+                        start.setHours(0);
+                        start.setHours(-2);
+
+                        end = new Date(cue);
+                        end.setMilliseconds(0);
+                        end.setSeconds(0);
+                        end.setMinutes(0);
+                        end.setHours(0);
+                        end.setHours(26);
+                    }
+                    else {
+                        var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+
+                        start = new Date(tempMiddle - (14 * 60 * 60 * 1000));
+                        start.setMilliseconds(0);
+                        start.setSeconds(0);
+                        start.setMinutes(0);
+
+                        if (start.getHours() % 4 != 2) {
+                            if (start.getHours() == 0 || start.getHours() % 4 == 0)
+                                start.setHours(start.getHours() - 2);
+                            else if (start.getHours() % 4 == 1)
+                                start.setHours(start.getHours() - 3);
+                            else
+                                start.setHours(start.getHours() - 1);
+
+                        }
+
+                        end = new Date(start.getTime() + (28 * 60 * 60 * 1000));
+                    }
+
+                    theRateDivisionToPixel = svgWidth / 56;
+                    theOldRatePixelToSecond = theRatePixelToSecond;
+                    theRatePixelToSecond = (28 * 60 * 60) / svgWidth;
+
+                    pathLUnit = 4 * 60 * 60 * 1000;
+                    pathMUnit = 60 * 60 * 1000;
+                    pathSUnit = 30 * 60 * 1000;
+
+                    createNewRuler();
+                    createNewCuepoint();
+                    createNewRecord();
+                    createNewEvent();
+                    execAnimate();
+                }
+            }
+        }
+        function execAnimate() {
+            isAnimation = true;
+            var stopAni = true;
+            var item, x1, x2, w1, w2, xOffSet, wOffset;
+
+            // ruler
+            for (var i = 0; i < rulerCollection.length; i++) {
+                item = rulerCollection[i];
+                x1 = parseFloat(item.getAttributeNS(null, "x1"));
+                x2 = parseFloat(item.getAttributeNS(null, "x2"));
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else 
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+                    
+                    item.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.setAttributeNS(null, "x1", x1);
+                }
+            }
+
+            // cuepoint
+            x1 = parseFloat(cuePoint.getAttributeNS(null, "x1"));
+            x2 = parseFloat(cuePoint.getAttributeNS(null, "x2"));
+            if (x1 != x2) {
+                stopAni = false;
+
+                xOffSet = x2 - x1;
+                if (Math.abs(xOffSet) <= 1)
+                    x1 = x2;
+                else
+                    x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                cuePoint.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                cuePoint.setAttributeNS(null, "x1", x1);
+            }
+
+            // record
+            for (var j = 0; j < recordCollection.length; j++) {
+                item = recordCollection[j];
+                x1 = parseFloat(item.getAttributeNS(null, "x1"));
+                x2 = parseFloat(item.getAttributeNS(null, "x2"));
+                w1 = parseFloat(item.getAttributeNS(null, "w1"));
+                w2 = parseFloat(item.getAttributeNS(null, "w2"));
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                    item.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.setAttributeNS(null, "x1", x1);
+                }
+
+                if (w1 != w2) {
+                    stopAni = false;
+
+                    wOffSet = w2 - w1;
+                    if (Math.abs(wOffSet) <= 1)
+                        w1 = w2;
+                    else
+                        w1 = FloatAdd(w1, formatFloat(wOffSet * 0.3, 2));
+
+                    item.setAttributeNS(null, "width", w1);
+                    item.setAttributeNS(null, "w1", w1);
+                }
+            }
+
+            // event
+            for (var k = 0; k< eventCollection.length; k++) {
+                item = eventCollection[k];
+                x1 = parseFloat(item.getAttributeNS(null, "x1"));
+                x2 = parseFloat(item.getAttributeNS(null, "x2"));
+                w1 = parseFloat(item.getAttributeNS(null, "w1"));
+                w2 = parseFloat(item.getAttributeNS(null, "w2"));
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                    item.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.setAttributeNS(null, "x1", x1);
+                }
+
+                if (w1 != w2) {
+                    stopAni = false;
+
+                    wOffSet = w2 - w1;
+                    if (Math.abs(wOffSet) <= 1)
+                        w1 = w2;
+                    else
+                        w1 = FloatAdd(w1, formatFloat(wOffSet * 0.3, 2));
+
+                    //item.setAttributeNS(null, "width", w1);
+                    item.setAttributeNS(null, "w1", w1);
+                }
+            }
+
+            if (!stopAni)
+                setTimeout("execAnimate()", 1);
+            else {
+                refreshRulerCollection();
+                isAnimation = false;
+            }
+            console.log(new Date());
+        }
+
+
+        function refreshRulerCollection() {
+            var item;
+
+            for (var i = 0; i < rulerCollection.length;) {
+                item = rulerCollection[i];
+                del = item.getAttributeNS(null, "del");
+                if (del == "1") {
+                    rulerCollection.splice(i, 1);
+                    item.parentNode.removeChild(item);
+                }
+                else
+                    i++;
+            }
+        }
+
+        function clearRuler() {
+            while (gRuler.lastChild) {
+                gRuler.removeChild(gRuler.lastChild);
+            }
+        }
+
+        function createFirstRuler() {
+            // Horizontal Ruler
+            createPath(gRuler, "none", "#0372b0", "2", "M -30000 44 H 30000", -3000, -3000, "0");
+
+            // Vertical Ruler
+            var index;
+            var isFirstPathLUnit = true;
+            var x1, x2;
+
+            for (index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                //if ((index.getTime() != start.getTime()) && (index.getTime() != end.getTime())) {
+                x1 = formatFloat((index.getTime() - oldStart.getTime()) / 1000 / theRatePixelToSecond, 2);
+                x2 = x1;
+
+                //console.log(theRatePixelToSecond + ", " + x1 + ", " + x2);
+
+                if (index.getTime() % pathLUnit == 0) {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 35 V 58", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+
+                    if (isFirstPathLUnit) {
+                        var itemText = createText(gRuler, "#0372b0", "none", "0", "70", monthNames[index.getMonth()] + " " + index.getDate() + " " + formatAMPM(index), x1, x2, "0", index.getTime())
+                        rulerCollection.push(itemText);
+
+                        isFirstPathLUnit = false;
+                    }
+                    else {
+                        var itemText = createText(gRuler, "#0372b0", "none", "0", "70", formatAMPM(index), x1, x2, "0", index.getTime())
+                        rulerCollection.push(itemText);
+                    }
+                }
+                else if (index.getTime() % pathMUnit == 0) {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 53", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+                }
+                else {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 49", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+                }
+                //}
+            }
+        }
+
+        function createNewRuler() {
+            // Vertical Ruler
+            var index;
+            var isFirstPathLUnit = true;
+            var x1, x2;
+            var newBaseStartX = formatFloat((start.getTime() - oldStart.getTime()) / 1000 / theOldRatePixelToSecond, 2);
+            //var newBaseEndX = ((end.getTime() - oldStart.getTime()) / 1000 / theOldRatePixelToSecond);
+            //var newBaseMiddleX = (newBaseStartX + newBaseEndX) / 2;
+
+            // 舊的 Ruler
+            for (var i = 0; i < rulerCollection.length;) {
+                var item = rulerCollection[i];
+                rulerCollection.splice(i, 1);
+                item.parentNode.removeChild(item);
+            }
+
+            // 新的 Ruler
+            for (index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                
+                x1 = formatFloat(FloatAdd(newBaseStartX, (index.getTime() - start.getTime()) / 1000 / theOldRatePixelToSecond), 2);
+                x2 = formatFloat((index.getTime() - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                
+
+                if (index.getTime() % pathLUnit == 0) {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 35 V 58", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+
+                    if (isFirstPathLUnit) {
+                        var itemText = createText(gRuler, "#0372b0", "none", "0", "70", monthNames[index.getMonth()] + " " + index.getDate() + " " + formatAMPM(index), x1, x2, "0", index.getTime())
+                        rulerCollection.push(itemText);
+
+                        isFirstPathLUnit = false;
+                    }
+                    else {
+                        var itemText = createText(gRuler, "#0372b0", "none", "0", "70", formatAMPM(index), x1, x2, "0", index.getTime())
+                        rulerCollection.push(itemText);
+                    }
+                }
+                else if (index.getTime() % pathMUnit == 0) {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 53", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+                }
+                else {
+                    var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 49", x1, x2, "0", index.getTime());
+                    rulerCollection.push(itemPath);
+                }
+                //}
+            }
+
+        }
+
+        function createNewRuler2() {
+            // Vertical Ruler
+            var index;
+            var isFirstPathLUnit = true;
+            var x1, x2, t;
+            var newBaseStartX = formatFloat((start.getTime() - oldStart.getTime()) / 1000 / theRatePixelToSecond, 2);
+            //var newBaseEndX = ((end.getTime() - oldStart.getTime()) / 1000 / theRatePixelToSecond);
+            //var newBaseMiddleX = (newBaseStartX + newBaseEndX) / 2;
+            //console.log(newBaseStartX);
+
+            // 舊的 Ruler
+            for (var i = 0; i < rulerCollection.length; i++) {
+                var item = rulerCollection[i];
+
+                x1 = parseFloat(item.getAttributeNS(null, "x1"));
+                x2 = parseFloat(item.getAttributeNS(null, "x2"));
+                t = parseFloat(item.getAttributeNS(null, "t"));
+
+                if (start > oldStart) { // later or early
+                    x2 = FloatSubtraction(x2,(Math.abs(newBaseStartX)));
+
+                    if (t < start.getTime())
+                        item.setAttributeNS(null, "del", "1");
+                }
+                else {
+                    x2 = FloatAdd(x2,(Math.abs(newBaseStartX)));
+
+                    if (t > end.getTime())
+                        item.setAttributeNS(null, "del", "1");
+                }
+                //console.log(x1, x2, t);
+                item.setAttributeNS(null, "x2", x2);
+            }
+
+            // 新的 Ruler
+            for (index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                x2 = formatFloat((index.getTime() - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                x1 = FloatAdd(newBaseStartX, x2);
+
+                //console.log(newBaseStartX + "," + x1 + ", " + x2);
+                if ((newBaseStartX < 0 && x1 < 0) || (newBaseStartX > 0 && x1 > svgWidth)) {
+                    if (index.getTime() % pathLUnit == 0) {
+                        var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 35 V 58", x1, x2, "0", index.getTime());
+                        rulerCollection.push(itemPath);
+
+                        if (isFirstPathLUnit) {
+                            var itemText = createText(gRuler, "#0372b0", "none", "0", "70", monthNames[index.getMonth()] + " " + index.getDate() + " " + formatAMPM(index), x1, x2, "0", index.getTime())
+                            rulerCollection.push(itemText);
+
+                            isFirstPathLUnit = false;
+                        }
+                        else {
+                            var itemText = createText(gRuler, "#0372b0", "none", "0", "70", formatAMPM(index), x1, x2, "0", index.getTime())
+                            rulerCollection.push(itemText);
+                        }
+                    }
+                    else if (index.getTime() % pathMUnit == 0) {
+                        var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 53", x1, x2, "0", index.getTime());
+                        rulerCollection.push(itemPath);
+                    }
+                    else {
+                        var itemPath = createPath(gRuler, "none", "#0372b0", "1", "M 0 44 V 49", x1, x2, "0", index.getTime());
+                        rulerCollection.push(itemPath);
+                    }
+
+                }
+            }
+        }
+
+
+        function clearCuepoint() {
+            while (gCuePoint.lastChild) {
+                gCuePoint.removeChild(gCuePoint.lastChild);
+            }
+        }
+        function createCuepoint() {
+            var cueDate = new Date(cue);
+            var pathX = formatFloat((cue - start.getTime()) / theRatePixelToSecond / 1000, 2);
+
+            // <path id="CuePoint" style="cursor: ew-resize;" fill="#ff0000" stroke="#ff0000" stroke-width="2" transform="matrix(1 0 0 1 754.502 0)" d="M 0 0 V 44" />
+            cuePoint = document.createElementNS(svgNS, "path");
+            cuePoint.setAttributeNS(null, "fill", "#ff0000");
+            cuePoint.setAttributeNS(null, "stroke", "#ff0000");
+            cuePoint.setAttributeNS(null, "stroke-width", "2");
+            cuePoint.setAttributeNS(null, "d", "M 0 0 V 44");
+            cuePoint.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + pathX + " 0)");
+            cuePoint.setAttributeNS(null, "style", "cursor: ew-resize");
+            cuePoint.setAttributeNS(null, "x1", pathX);
+            cuePoint.setAttributeNS(null, "x2", pathX);
+            cuePoint.setAttributeNS(null, "del", "0");
+            cuePoint.setAttributeNS(null, "t", cue);
+
+            cuePoint.onmousedown = function (event) {
+                isDragCuePoint = true;
+
+                cueOriginalRelativeX = event.pageX - $("#Timeline").offset().left;  // 相容 Firefox
+
+                cueOriginalX = getPageX(event);
+
+                console.log(cueOriginalX + ", " +cueOriginalRelativeX);
+                return false; // 取消 browser 內建 drag element 功能
+            };
+
+
+
+            gCuePoint.appendChild(cuePoint);
+
+
+            $("#CueDate").val(cueDate.toString());
+
+            return cuePoint;
+
+        }
+
+        function createNewCuepoint() {
+            x2 = formatFloat((cue - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+            cuePoint.setAttributeNS(null, "x2", x2);
+            cuePoint.setAttributeNS(null, "t", cue);
+        }
+
+        function formatAMPM(date) {
+            var hours = date.getHours();
+            var minutes = date.getMinutes();
+            var ampm = hours >= 12 ? 'pm' : 'am';
+            hours = hours % 12;
+            hours = hours ? hours : 12; // the hour '0' should be '12'
+            minutes = minutes < 10 ? '0' + minutes : minutes;
+            var strTime = hours + ':' + minutes + ' ' + ampm;
+            return strTime;
+        }
+
+        function rulerTextFormat(date) {
+            var text = "";
+            if (scale == 0) {
+                if (date.getHours())
+                    text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+            }
+            else if (scale == 1) {
+                text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+            }
+            else {
+                text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+            }
+            return text;
+        }
+
+
+        function early() {
+            if (!isAnimation) {
+                oldStart = new Date(start.getTime());
+                if (scale == 0) {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (5 * 60 * 1000);
+                    start = new Date(tempMiddle - (3 * 60 * 1000));
+                    end = new Date(tempMiddle + (3 * 60 * 1000));
+
+                }
+                else if (scale == 1) {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (60 * 60 * 1000);
+                    start = new Date(tempMiddle - (36 * 60 * 1000));
+                    end = new Date(tempMiddle + (36 * 60 * 1000));
+
+                }
+                else {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (24 * 60 * 60 * 1000);
+                    start = new Date(tempMiddle - (14 * 60 * 60 * 1000));
+                    end = new Date(tempMiddle + (14 * 60 * 60 * 1000));
+                }
+                //console.log(start.toString() + " " + new Date(tempMiddle) + " " + end.toString());
+                //clearRuler();
+                createNewRuler2();
+                createNewCuepoint();
+                createNewRecord();
+                createNewEvent();
+                execAnimate();
+            }
+            //if (cue >= start.getTime() && cue <= end.getTime())
+            //    createCuepoint();
+        }
+
+
+        function later() {
+            if (!isAnimation) {
+                oldStart = new Date(start.getTime());
+                if (scale == 0) {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (5 * 60 * 1000);
+                    start = new Date(tempMiddle - (3 * 60 * 1000));
+                    end = new Date(tempMiddle + (3 * 60 * 1000));
+                }
+                else if (scale == 1) {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (60 * 60 * 1000);
+                    start = new Date(tempMiddle - (36 * 60 * 1000));
+                    end = new Date(tempMiddle + (36 * 60 * 1000));
+                }
+                else {
+                    var tempMiddle = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (24 * 60 * 60 * 1000);
+                    start = new Date(tempMiddle - (14 * 60 * 60 * 1000));
+                    end = new Date(tempMiddle + (14 * 60 * 60 * 1000));
+                }
+
+                //console.log(start.toString() + " " + new Date(tempMiddle) + " " + end.toString());
+                createNewRuler2();
+                createNewCuepoint();
+                createNewRecord();
+                createNewEvent();
+                execAnimate();
+            }
+        }
+
+        function moveRuler(moveDate) {
+            if (!isAnimation) {
+                oldStart = new Date(start.getTime());
+
+                if (scale == 0) {
+                    start = new Date(moveDate.getTime());
+                    start.setMilliseconds(0);
+                    start.setSeconds(0);
+                    start.setMinutes(Math.floor(start.getMinutes() / 5) * 5, -30);
+
+                    end = new Date(moveDate.getTime());
+                    end.setMilliseconds(0);
+                    end.setSeconds(0);
+                    end.setMinutes(Math.floor(end.getMinutes() / 5) * 5 + 5, 30);
+
+                }
+                else if (scale == 1) {
+                    start = new Date(moveDate.getTime());
+                    start.setMilliseconds(0);
+                    start.setSeconds(0);
+                    start.setMinutes(0);
+                    start.setMinutes(-6);
+
+                    end = new Date(moveDate.getTime());
+                    end.setMilliseconds(0);
+                    end.setSeconds(0);
+                    end.setMinutes(66);
+                }
+                else {
+                    start = new Date(moveDate.getTime());
+                    start.setMilliseconds(0);
+                    start.setSeconds(0);
+                    start.setMinutes(0);
+                    start.setHours(0);
+                    start.setHours(-2);
+
+                    end = new Date(moveDate.getTime());
+                    end.setMilliseconds(0);
+                    end.setSeconds(0);
+                    end.setMinutes(0);
+                    end.setHours(0);
+                    end.setHours(26);
+                }
+
+                //console.log(start.toString() + " " + moveDate.toString() + " " + end.toString());
+                createNewRuler2();
+                createNewCuepoint();
+                createNewRecord();
+                createNewEvent();
+                execAnimate();
+            }
+        }
+
+
+
+        function createTimeline() {
+            svgWidth = $("#SVGContainer").width();
+
+            createSVG();
+            createSVGG();
+
+            firstRuler();
+            createFirstRecord();
+            createFirstEvent();
+        }
+
+        function createSVG() {
+            // svg
+            svg = document.createElementNS(svgNS, "svg");
+            svg.setAttributeNS(null, "id", "Timeline");
+            svg.setAttributeNS(null, "width", svgWidth);
+            svg.setAttributeNS(null, "height", "72");
+            svg.setAttributeNS(null, "version", "1.1");
+            svg.setAttributeNS(null, "viewBox", "0 0 " + svgWidth + " 72");
+            document.getElementById("SVGContainer").appendChild(svg);
+
+        }
+
+        function createSVGG() {
+            //svg g Ruler
+            gRuler = document.createElementNS(svgNS, "g");
+            svg.appendChild(gRuler);
+
+            //svg g Record
+            gRecord = document.createElementNS(svgNS, "g");
+            svg.appendChild(gRecord);
+
+            //svg g Event
+            gEvent = document.createElementNS(svgNS, "g");
+            svg.appendChild(gEvent);
+
+            //svg g CuePoint
+            gCuePoint = document.createElementNS(svgNS, "g");
+            svg.appendChild(gCuePoint);
+        }
+
+
+        function add1Second() {
+            if (aniCueHandle == 0 && isDragCuePoint == false) { // 沒有動畫正在進行 and 沒有正在拖CuePoint
+                cue = cue + 1000;
+            }
+        }
+
+
+        function cueToSlowly(destDate) {
+            if (aniCueHandle == 0 && isDragCuePoint == false) { // 沒有動畫正在進行 and 沒有正在拖CuePoint
+                cue = destDate.getTime();
+                var destX = ((cue - start.getTime()) / 6000); // 換算成 pixel
+                var d = cuePoint.getAttributeNS(null, "d");
+                var originalX = parseInt(d.split(" ")[1]);
+
+                if (destX <= 640 && destX >= 0) { // cue 到 0~640
+                    // 如果原來的 CuePoint 太遠，將 CuePoint 的 path 調近，以解決動畫跑太久
+                    if (originalX > 640)
+                        originalX = 645;
+                    if (originalX < 0)
+                        originalX = -5;
+                    cuePoint.setAttributeNS(null, "d", "M " + originalX + " 0 V 44");
+                }
+                else { // cue 超出 0~640
+                    //if (destX > 640)
+                    //    later();
+                    //else
+                    //    early();
+                }
+
+                // 動畫
+                aniCueHandle = setInterval("cueToSlowlyEffect(" + destX + ")", 1);
+
+                $("#CueDate").val(destDate.toString());
+            }
+        }
+
+        //function dragTo(nowX, deltaX) {
+        //    cue = start.getTime() + (deltaX * theRatePixelToSecond * 1000); // 1 pixel = 6 秒 * 1000 mini secs
+        //    //console.log(new Date(cue));
+        //    console.log(nowX + ", " + deltaX)
+
+        //    var newX = cueOriginalRelativeX + deltaX;
+        //    //console.log(cue);
+
+        //    console.log(deltaX + ", " + theRatePixelToSecond);
+        //    cuePoint.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + newX + " 0)");
+
+        //    var destDate = new Date(cue);
+        //    $("#CueDate").val(destDate.toString());
+        //}
+        function clearSVGContent() {
+            while (svg.lastChild) {
+                svg.removeChild(svg.lastChild);
+            }
+        }
+
+        function createPath(container, fill, stroke, strokeWidth, d, x1, x2, del, time) {
+            var path = document.createElementNS(svgNS, "path");
+            path.setAttributeNS(null, "fill", fill);
+            path.setAttributeNS(null, "stroke", stroke);
+            path.setAttributeNS(null, "stroke-width", strokeWidth);
+            path.setAttributeNS(null, "d", d);
+            path.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+
+            path.setAttributeNS(null, "x1", x1);
+            path.setAttributeNS(null, "x2", x2);
+            path.setAttributeNS(null, "del", del);
+            path.setAttributeNS(null, "t", time);
+
+            container.appendChild(path);
+
+            return path;
+        }
+
+        function createPathEffects(container, fill, stroke, strokeWidth, d, x1, x2) {
+            //console.log(x1 + "," + x2);
+            var path = document.createElementNS(svgNS, "path");
+            path.setAttributeNS(null, "fill", fill);
+            path.setAttributeNS(null, "stroke", stroke);
+            path.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+            path.setAttributeNS(null, "stroke-width", strokeWidth);
+            path.setAttributeNS(null, "d", d);
+            container.appendChild(path);
+
+            if (x1 < x2)
+                animateLeftIn(path, x1, x2);
+            else
+                animateRightIn(path, x1, x2);
+        }
+
+
+        //var count = 0;
+        function animateLeftIn(item, sourceX, targetX) {
+            //console.log("leftin" + (++count));
+            item.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + sourceX + " 0)");
+
+            if (targetX != sourceX) {
+                sourceX = ((targetX - sourceX) / 1.7 < 1) ? targetX : sourceX + (targetX - sourceX) / 1.7;
+                //window.requestAnimationFrame(function () { animateLeftIn(item, sourceX, targetX); });
+                setTimeout(function () { animateLeftIn(item, sourceX, targetX); }, 50);
+            }
+        }
+
+        function animateRightIn(item, sourceX, targetX) {
+            //console.log("rightin" + (++count));
+            item.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + sourceX + " 0)");
+
+            if (targetX != sourceX) {
+                sourceX = ((Math.abs(targetX - sourceX)) / 1.7 < 1) ? targetX : sourceX - (Math.abs(targetX - sourceX)) / 1.7;
+                //window.requestAnimationFrame(function () { animateRightIn(item, sourceX, targetX); });
+                setTimeout(function () { animateRightIn(item, sourceX, targetX); }, 50);
+            }
+        }
+
+        function createText(container, fill, stroke, x, y, content, x1, x2, del, time) {
+            //<text class="TimelineText" fill="#076dab" stroke="none" x="884.0278" y="65.3">6:15 pm</text>
+            var text = document.createElementNS(svgNS, "text");
+            text.setAttributeNS(null, "fill", fill);
+            text.setAttributeNS(null, "class", "TimelineText");
+            text.setAttributeNS(null, "stroke", stroke);
+            text.setAttributeNS(null, "x", x);
+            text.setAttributeNS(null, "y", y);
+            text.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+            text.textContent = content;
+
+            text.setAttributeNS(null, "x1", x1);
+            text.setAttributeNS(null, "x2", x2);
+            text.setAttributeNS(null, "del", del);
+            text.setAttributeNS(null, "t", time);
+
+            container.appendChild(text);
+
+            return text;
+        }
+        function createTextEffects(container, fill, stroke, x, y, content, x1, x2) {
+            //<text class="TimelineText" fill="#076dab" stroke="none" x="884.0278" y="65.3">6:15 pm</text>
+            var text = document.createElementNS(svgNS, "text");
+            text.setAttributeNS(null, "fill", fill);
+            text.setAttributeNS(null, "class", "TimelineText");
+            text.setAttributeNS(null, "stroke", stroke);
+            text.setAttributeNS(null, "x", x);
+            text.setAttributeNS(null, "y", y);
+            text.textContent = content;
+            container.appendChild(text);
+
+            if (x1 < x2)
+                animateLeftIn(text, x1, x2);
+            else
+                animateRightIn(text, x1, x2);
+        }
+
+        document.onmousemove = function (event) {
+            if (isDragCuePoint) {
+                var nowX = getPageX(event);
+                var deltaX = nowX - cueOriginalX;
+
+                cue = start.getTime() + ((cueOriginalRelativeX + deltaX) * theRatePixelToSecond * 1000); // 1 pixel = 6 秒 * 1000 mini secs
+                //console.log(new Date(cue));
+                //console.log(nowX + ", " + deltaX)
+
+                var newX = cueOriginalRelativeX + deltaX;
+                //console.log(cue);
+
+                //console.log(deltaX + ", " + theRatePixelToSecond);
+                cuePoint.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + newX + " 0)");
+                cuePoint.setAttributeNS(null, "x1", newX);
+                cuePoint.setAttributeNS(null, "x2", newX);
+
+
+                var destDate = new Date(cue);
+                $("#CueDate").val(destDate.toString());
+                //dragTo(nowX, deltaX);
+
+                //console.log(deltaX);
+            }
+
+        };
+        document.onmouseup = function (event) {
+            isDragCuePoint = false;
+            //console.log(isDragCuePoint);
+        };
+
+        Number.prototype.padLeft = function (base, chr) {
+            var len = (String(base || 10).length - String(this).length) + 1;
+            return len > 0 ? new Array(len).join(chr || '0') + this : this;
+        }
+
+        if (!Date.now) {
+            Date.now = function now() {
+                return new Date().getTime();
+            };
+        }
+
+        function getPageX(event) {
+            var dot, eventDoc, doc, body, pageX;
+            event = event || window.event; // IE-ism
+
+            if (event.pageX == null && event.clientX != null) {
+                eventDoc = (event.target && event.target.ownerDocument) || document;
+                doc = eventDoc.documentElement;
+                body = eventDoc.body;
+
+                event.pageX = event.clientX +
+                  (doc && doc.scrollLeft || body && body.scrollLeft || 0) -
+                  (doc && doc.clientLeft || body && body.clientLeft || 0);
+            }
+            return event.pageX;
+        }
+
+        function formatFloat(num, pos) {
+            var size = Math.pow(10, pos);
+            return Math.round(num * size) / size;
+        }
+
+        //浮點數相加
+        function FloatAdd(arg1, arg2) {
+            var r1, r2, m;
+            try { r1 = arg1.toString().split(".")[1].length; } catch (e) { r1 = 0; }
+            try { r2 = arg2.toString().split(".")[1].length; } catch (e) { r2 = 0; }
+            m = Math.pow(10, Math.max(r1, r2));
+            return (FloatMul(arg1, m) + FloatMul(arg2, m)) / m;
+        }
+        //浮點數相減
+        function FloatSubtraction(arg1, arg2) {
+            var r1, r2, m, n;
+            try { r1 = arg1.toString().split(".")[1].length } catch (e) { r1 = 0 }
+            try { r2 = arg2.toString().split(".")[1].length } catch (e) { r2 = 0 }
+            m = Math.pow(10, Math.max(r1, r2));
+            n = (r1 >= r2) ? r1 : r2;
+            return ((arg1 * m - arg2 * m) / m).toFixed(n);
+        }
+        //浮點數相乘
+        function FloatMul(arg1, arg2) {
+            var m = 0, s1 = arg1.toString(), s2 = arg2.toString();
+            try { m += s1.split(".")[1].length; } catch (e) { }
+            try { m += s2.split(".")[1].length; } catch (e) { }
+            return Number(s1.replace(".", "")) * Number(s2.replace(".", "")) / Math.pow(10, m);
+        }
+        //浮點數相除
+        function FloatDiv(arg1, arg2) {
+            var t1 = 0, t2 = 0, r1, r2;
+            try { t1 = arg1.toString().split(".")[1].length } catch (e) { }
+            try { t2 = arg2.toString().split(".")[1].length } catch (e) { }
+            with (Math) {
+                r1 = Number(arg1.toString().replace(".", ""))
+                r2 = Number(arg2.toString().replace(".", ""))
+                return (r1 / r2) * pow(10, t2 - t1);
+            }
+        }
+    </script>
+
+</body>
+</html>

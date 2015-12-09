@@ -1,0 +1,6 @@
+F:\TestCode\SVGTimeline\Timeline\Timeline\bin\Timeline.dll
+F:\TestCode\SVGTimeline\Timeline\Timeline\bin\Timeline.pdb
+F:\TestCode\SVGTimeline\Timeline\Timeline\obj\Debug\Timeline.csprojResolveAssemblyReference.cache
+F:\TestCode\SVGTimeline\Timeline\Timeline\obj\Debug\Timeline.dll
+F:\TestCode\SVGTimeline\Timeline\Timeline\obj\Debug\Timeline.pdb
+F:\TestCode\SVGTimeline\Timeline\Timeline\bin\Timeline.dll.config

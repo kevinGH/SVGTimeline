@@ -1,0 +1,1183 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title></title>
+    <style>
+        .Timeline {
+            /*border: 1px solid black;*/
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        .TimelineText {
+            font: 12px Arial;
+            font-size-adjust: none;
+            font-stretch: normal;
+            text-anchor: middle;
+        }
+
+
+        #SVGContainer {
+            width: 640px;
+            /*background-color: pink;*/
+            /*position: absolute;
+            left: 200px;
+            top: 100px;*/
+        }
+    </style>
+    <script src="Scripts/jquery-2.1.1.min.js"></script>
+</head>
+<body>
+
+    <div id="SVGContainer"></div>
+    <input type="text" id="CueDate" style="width: 350px;" value="" />
+    <br />
+    <input type="button" id="early" value="early" />
+    <input type="button" id="later" value="later" />
+    <input type="button" id="min" value="5 min" />
+    <input type="button" id="hour" value="1 hour" />
+    <input type="button" id="day" value="1 day" />
+    <input type="button" id="now" value="now" />
+    <input type="button" id="time1" value="time1" />
+    <br />
+
+    <script>
+        // html element
+        var container,
+            el_svg,
+            el_ruler,
+            el_event,
+            el_record,
+            el_cue,
+            tlWidth = 640,
+            NS = "http://www.w3.org/2000/svg";
+
+        // 動畫
+        var isAnimateMotion = false,
+            isDragCue = false,
+            cueOriginalX,
+            cueOriginalRelativeX;
+
+        // data & object
+        var start,
+            end,
+            scale = 1, // 0:5min 1:1hour 2:24hour
+            records = [{ "start": 1420302880000, "end": 1420403780000 }, { "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }, { "start": 1420407000000, "end": new Date().getTime() }],
+            events = [{ "start": 1420403880000, "end": 1420405200000 }, { "start": 1420406400000, "end": 1420407000000 }, { "start": 1420408000000, "end": 1420408000000 }, { "start": 1420409000000, "end": 1420410000000 }],
+            rulerCollection = [], // all ruler
+            recordCollection = [], // all record
+            eventCollection = [], // all event
+            cuepoint; // only one cue
+
+        // 計算用 & 換算用
+        var theRatePixelToSecond,
+            pathLUnit,
+            pathMUnit,
+            pathSUnit,
+            monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+        // websocket 取得 Events
+        var ws,
+            wsURL = "ws://10.144.183.151:8888",
+            wsRequestEventTimestamp,
+            wsStatus;
+
+        $(document).ready(function () {
+            $("#early").click(function () {
+                early();
+            });
+            $("#later").click(function () {
+                later();
+            });
+            $("#min").click(function () {
+                setScale(0);
+            });
+            $("#hour").click(function () {
+                setScale(1);
+            });
+            $("#day").click(function () {
+                setScale(2);
+            });
+            $("#now").click(function () {
+                moveRuler(new Date());
+            });
+            $("#time1").click(function () {
+                moveRuler(new Date(1420406400000));
+            });
+
+            createTimeline(document.getElementById("SVGContainer"));
+        });
+
+        function setCue(timestamp) {
+            if (!isAnimateMotion && !isDragCue) { // 沒有動畫正在進行 and 沒有正在拖cuepoint
+                cuepoint.time = timestamp;
+                cuepoint.x2 = fromTimestampToPixel(timestamp, start.getTime());
+
+                if (cuepoint.x1 != cuepoint.x2) {
+                    cuepoint.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + cuepoint.x2 + " 0)");
+                    cuepoint.x1 = cuepoint.x2;
+                }
+            }
+        }
+
+        function removeRuler() {
+            for (var i = 0; i < rulerCollection.length;) {
+                var item = rulerCollection[i];
+                rulerCollection.splice(i, 1);
+                item.el.parentNode.removeChild(item.el);
+            }
+        }
+        function removeEvent() {
+            for (var i = 0; i < eventCollection.length;) {
+                var item = eventCollection[i];
+                eventCollection.splice(i, 1);
+                item.el.parentNode.removeChild(item.el);
+            }
+        }
+
+        function createEvent() {
+            var x1, x2, t, w1, w2, rectStartX, rectEndX;
+
+            for (var i = 0; i < events.length; i++) {
+                // (60秒 * 1000毫秒) / 10pixel = 6000
+                rectStartX = fromTimestampToPixel(events[i].start, start.getTime());
+                rectEndX = fromTimestampToPixel(events[i].end, start.getTime());
+                w1 = FloatSubtraction(rectEndX, rectStartX);
+                w2 = w1;
+
+                var rect = createRectElement(el_event, "#d875ff", "0.5", "none", rectStartX, "3", "6", "32");
+                //var rect = createRectElement(el_event, "#d875ff", "0.5", "none", rectStartX, "3", FloatSubtraction(rectEndX, rectStartX), "32");
+
+                //rect.onmousemove = rectMousemove;
+                rect.onclick = rectClick;
+
+                eventCollection.push({ "el": rect, "x1": rectStartX, "x2": rectStartX, "w1": w1, "w2": w2, "del": 0, "timeS": events[i].start, "timeE": events[i].end });
+            }
+        }
+
+        function createRecord() {
+            var x1, x2, rectStartX, rectEndX, w1, w2;
+
+            // 新的 Record
+            for (var i = 0; i < records.length; i++) {
+                rectStartX = formatFloat((records[i].start - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                rectEndX = formatFloat((records[i].end - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+                w1 = FloatSubtraction(rectEndX, rectStartX);
+                w2 = w1;
+
+                // rect 1
+                recordCollection.push({ "el": createRectElement(el_record, "#5acaed", "0.5", "none", rectStartX, "37", w1, "6"), "x1": rectStartX, "x2": rectStartX, "w1": w1, "w2": w2, "del": 0, "timeS": records[i].start, "timeE": records[i].end });
+
+                // rect 2
+                var rect = createRectElement(el_record, "#5acaed", "0", "none", rectStartX, "4", w1, "40");
+                //rect.onmousemove = rectMousemove;
+                rect.onclick = rectClick;
+                    
+                recordCollection.push({ "el": rect, "x1": rectStartX, "x2": rectStartX, "w1": w1, "w2": w2, "del": 0, "timeS": records[i].start, "timeE": records[i].end });
+            }
+        }
+        function rectMousemove(e) {
+            var relativeX = FloatSubtraction(e.pageX, $(el_svg).offset().left);
+            console.log(new Date(start.getTime() + relativeX * theRatePixelToSecond * 1000));            
+        }
+        function rectClick(e) {
+            if (!isAnimateMotion && !isDragCue) {
+                var relativeX = FloatSubtraction(e.pageX, $(el_svg).offset().left);  // 相容 Firefox
+
+                setCue(start.getTime() + relativeX * theRatePixelToSecond * 1000);
+
+                cb_cueChange(cuepoint.time);
+            }
+        }
+        function setScale(scaleNumber) {
+            if (!isAnimateMotion && !isDragCue) {
+                var oldStart = new Date(start.getTime());
+                var theOldRatePixelToSecond = theRatePixelToSecond;
+
+                switch (scaleNumber) {
+                    case 0: // 5 min
+                        if (scale == 0)
+                            return;
+
+                        isAnimateMotion = true;
+                        scale = 0;
+                        theRatePixelToSecond = (6 * 60) / tlWidth;
+
+                        if (cuepoint.time >= start.getTime() && cuepoint.time <= end.getTime()) {
+                            start = new Date(cuepoint.time);
+                            start.setMilliseconds(0);
+                            start.setSeconds(0);
+                            start.setMinutes(Math.floor(start.getMinutes() / 5) * 5, -30);
+
+                            end = new Date(cuepoint.time);
+                            end.setMilliseconds(0);
+                            end.setSeconds(0);
+                            end.setMinutes(Math.floor(end.getMinutes() / 5) * 5 + 5, 30);
+                        }
+                        else {
+                            var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+
+                            start = new Date(tempMiddle - (3 * 60 * 1000));
+                            if (start.getSeconds() != 29) {
+                                start.setSeconds(-30);
+                            }
+                            end = new Date(start.getTime() + (6 * 60 * 1000));
+                        }
+
+                        pathLUnit = 60 * 1000;
+                        pathMUnit = 15 * 1000;
+                        pathSUnit = 5 * 1000;
+
+                        break;
+                    case 1:
+                        if (scale == 1)
+                            return;
+                        
+                        isAnimateMotion = true;
+                        scale = 1;
+                        theRatePixelToSecond = (72 * 60) / tlWidth;
+
+                        if ((cuepoint.time >= start.getTime() && cuepoint.time <= end.getTime())) {
+                            start = new Date(cuepoint.time);
+                            start.setMilliseconds(0);
+                            start.setSeconds(0);
+                            start.setMinutes(0);
+                            start.setMinutes(-6);
+
+                            end = new Date(cuepoint.time);
+                            end.setMilliseconds(0);
+                            end.setSeconds(0);
+                            end.setMinutes(66);
+                        }
+                        else {
+                            var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+                            start = new Date(tempMiddle);
+                            start.setMilliseconds(0);
+                            start.setSeconds(0);
+                            start.setMinutes(0);
+                            start.setMinutes(-6);
+
+                            end = new Date(tempMiddle);
+                            end.setMilliseconds(0);
+                            end.setSeconds(0);
+                            end.setMinutes(66);
+                        }
+
+
+                        pathLUnit = 15 * 60 * 1000;
+                        pathMUnit = 5 * 60 * 1000;
+                        pathSUnit = 1 * 60 * 1000;
+                        break;
+                    case 2:
+                        if (scale == 2)
+                            return;
+
+                        isAnimateMotion = true;
+                        scale = 2;
+                        theRatePixelToSecond = (28 * 60 * 60) / tlWidth;
+
+                        if (cuepoint.time >= start.getTime() && cuepoint.time <= end.getTime()) {
+                            start = new Date(cuepoint.time);
+                            start.setMilliseconds(0);
+                            start.setSeconds(0);
+                            start.setMinutes(0);
+                            start.setHours(0);
+                            start.setHours(-2);
+
+                            end = new Date(cuepoint.time);
+                            end.setMilliseconds(0);
+                            end.setSeconds(0);
+                            end.setMinutes(0);
+                            end.setHours(0);
+                            end.setHours(26);
+                        }
+                        else {
+                            var tempMiddle = start.getTime() + (end.getTime() - start.getTime()) / 2;
+
+                            start = new Date(tempMiddle - (14 * 60 * 60 * 1000));
+                            start.setMilliseconds(0);
+                            start.setSeconds(0);
+                            start.setMinutes(0);
+
+                            if (start.getHours() % 4 != 2) {
+                                if (start.getHours() == 0 || start.getHours() % 4 == 0)
+                                    start.setHours(start.getHours() - 2);
+                                else if (start.getHours() % 4 == 1)
+                                    start.setHours(start.getHours() - 3);
+                                else
+                                    start.setHours(start.getHours() - 1);
+
+                            }
+
+                            end = new Date(start.getTime() + (28 * 60 * 60 * 1000));
+                        }
+
+                        pathLUnit = 4 * 60 * 60 * 1000;
+                        pathMUnit = 60 * 60 * 1000;
+                        pathSUnit = 30 * 60 * 1000;
+                        break;
+                }
+
+
+
+                ws.onmessage = function (evt) {
+                    var index, x1, x2, w1, w2, rectStartX, rectEndX, firstTextPrefix = "", lastTextPrefix = "", text;
+
+                    var receivedMsg = JSON.parse(evt.data);
+                    if (wsRequestEventTimestamp == receivedMsg.wsRequestEventTimestamp) {
+                        events = receivedMsg.events;
+
+                        cuepoint.x2 = fromTimestampToPixel(cuepoint.time, start.getTime());
+
+
+                        var newBaseStartX = formatFloat((start.getTime() - oldStart.getTime()) / 1000 / theOldRatePixelToSecond, 2);
+
+                        // 舊的 Ruler 移除
+                        removeRuler();
+                        // 新的 Ruler
+                        for (index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                            x1 = formatFloat(FloatAdd(newBaseStartX, (index.getTime() - start.getTime()) / 1000 / theOldRatePixelToSecond), 2);
+                            x2 = formatFloat((index.getTime() - start.getTime()) / 1000 / theRatePixelToSecond, 2);
+
+                            if (index.getTime() % pathLUnit == 0) {
+                                text = formatAMPM(index);
+
+                                if (firstTextPrefix == "") {
+                                    firstTextPrefix = monthNames[index.getMonth()] + " " + index.getDate();
+
+                                    text = firstTextPrefix + " " + text;
+                                }
+                                else if (lastTextPrefix == "" && (firstTextPrefix != (monthNames[index.getMonth()] + " " + index.getDate()))) {
+                                    lastTextPrefix = monthNames[index.getMonth()] + " " + index.getDate();
+
+                                    text = lastTextPrefix + " " + text;
+                                }
+
+                                rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 35 V 58", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                                rulerCollection.push({ "el": createText(el_ruler, "#0372b0", "none", "0", "70", text, x1), "type": "text", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                            }
+                            else if (index.getTime() % pathMUnit == 0)
+                                rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 53", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                            else
+                                rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 49", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+
+                        }
+
+                        // 舊的 event 移除
+                        removeEvent();
+                        // 新的 event
+                        for (var i = 0; i < events.length; i++) {
+                            x1 = formatFloat(FloatAdd(newBaseStartX, (events[i].start - start.getTime()) / 1000 / theOldRatePixelToSecond), 2);
+                            x2 = fromTimestampToPixel(events[i].start, start.getTime());
+                            rectStartX = x2;
+                            rectEndX = fromTimestampToPixel(events[i].end, start.getTime());
+                            w1 = FloatSubtraction(rectEndX, rectStartX);
+                            w2 = w1;
+
+                            var rect = createRectElement(el_event, "#d875ff", "0.5", "none", x1, "3", "6", "32");
+                            //var rect = createRectElement(el_event, "#d875ff", "0.5", "none", x1, "3", FloatSubtraction(rectEndX, rectStartX), "32");
+
+                            //rect.onmousemove = rectMousemove;
+                            rect.onclick = rectClick;
+
+                            eventCollection.push({ "el": rect, "x1": x1, "x2": x2, "w1": w1, "w2": w2, "del": 0, "timeS": events[i].start, "timeE": events[i].end });
+                        }
+
+                        // 舊的 Record
+                        for (var i = 0; i < recordCollection.length; i++) {
+                            var item = recordCollection[i];
+
+                            rectStartX = fromTimestampToPixel(item.timeS, start.getTime());
+                            rectEndX = fromTimestampToPixel(item.timeE, start.getTime());
+                            x2 = rectStartX;
+                            w2 = FloatSubtraction(rectEndX, rectStartX);
+
+                            item.x2 = x2;
+                            item.w2 = w2;
+                        }
+
+                        execAnimate();
+                    }
+
+                };
+
+                wsRequestEventTimestamp = new Date().getTime();
+                var msg = {
+                    "wsRequestEventTimestamp": wsRequestEventTimestamp,
+                    "scale": 1,
+                    "start": start.getTime(),
+                    "end": end.getTime()
+                };
+                ws.send(JSON.stringify(msg));
+
+            }
+        }
+
+
+        function execAnimate() {
+            isAnimateMotion = true;
+            var stopAni = true;
+            var item, x1, x2, w1, w2, xOffSet, wOffset;
+
+            // ruler
+            for (var i = 0; i < rulerCollection.length; i++) {
+                item = rulerCollection[i];
+                x1 = item.x1;
+                x2 = item.x2;
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                    item.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.x1 = x1;
+                }
+            }
+
+            // cuepoint
+            x1 = cuepoint.x1;
+            x2 = cuepoint.x2;
+            if (x1 != x2) {
+                stopAni = false;
+
+                xOffSet = x2 - x1;
+                if (Math.abs(xOffSet) <= 1)
+                    x1 = x2;
+                else
+                    x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                cuepoint.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                cuepoint.x1 = x1;
+            }
+
+            // record
+            for (var j = 0; j < recordCollection.length; j++) {
+                item = recordCollection[j];
+                x1 = item.x1;
+                x2 = item.x2;
+                w1 = item.w1;
+                w2 = item.w2;
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                    item.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.x1 = x1;
+                }
+
+                if (w1 != w2) {
+                    stopAni = false;
+
+                    wOffSet = w2 - w1;
+                    if (Math.abs(wOffSet) <= 1)
+                        w1 = w2;
+                    else
+                        w1 = FloatAdd(w1, formatFloat(wOffSet * 0.3, 2));
+
+                    item.el.setAttributeNS(null, "width", w1);
+                    item.w1 = w1;
+                }
+            }
+
+            // event
+            for (var k = 0; k < eventCollection.length; k++) {
+                item = eventCollection[k];
+                x1 = item.x1;
+                x2 = item.x2;
+                w1 = item.w1;
+                w2 = item.w2;
+
+                if (x1 != x2) {
+                    stopAni = false;
+
+                    xOffSet = x2 - x1;
+                    if (Math.abs(xOffSet) <= 1)
+                        x1 = x2;
+                    else
+                        x1 = FloatAdd(x1, formatFloat(xOffSet * 0.3, 2));
+
+                    item.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+                    item.x1 = x1;
+                }
+
+                if (w1 != w2) {
+                    stopAni = false;
+
+                    wOffSet = w2 - w1;
+                    if (Math.abs(wOffSet) <= 1)
+                        w1 = w2;
+                    else
+                        w1 = FloatAdd(w1, formatFloat(wOffSet * 0.3, 2));
+
+                    item.w1 = w1;
+                }
+            }
+
+            if (!stopAni) {
+                setTimeout("execAnimate()", 1);
+            }
+            else {
+                cleanCollection();
+                isAnimateMotion = false;
+            }
+            //console.log(new Date());
+        }
+
+
+        function cleanCollection() {
+            // clean up ruler
+            for (var i = 0; i < rulerCollection.length;) {
+                var item = rulerCollection[i];
+
+                if (item.del == 1) {
+                    rulerCollection.splice(i, 1);
+                    item.el.parentNode.removeChild(item.el);
+                }
+                else
+                    i++;
+            }
+
+            // clean up event
+            for (var i = 0; i < eventCollection.length;) {
+                var item = eventCollection[i];
+
+                if (item.del == 1) {
+                    eventCollection.splice(i, 1);
+                    item.el.parentNode.removeChild(item.el);
+                }
+                else
+                    i++;
+            }
+        }
+
+        function createRuler() {
+            var x1, x2;
+            var firstTextPrefix = "", lastTextPrefix = "", text;
+
+            for (var index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                //x1 = formatFloat((index.getTime() - oldStart.getTime()) / 1000 / theRatePixelToSecond, 2);
+                x1 = fromTimestampToPixel(index.getTime(), start.getTime());
+                x2 = x1;
+
+                if (index.getTime() % pathLUnit == 0) {
+                    text = formatAMPM(index);
+
+                    if (firstTextPrefix == "") {
+                        firstTextPrefix = monthNames[index.getMonth()] + " " + index.getDate();
+
+                        text = firstTextPrefix + " " + text;
+                    }
+                    else if (lastTextPrefix == "" && (firstTextPrefix != (monthNames[index.getMonth()] + " " + index.getDate()))) {
+                        lastTextPrefix = monthNames[index.getMonth()] + " " + index.getDate();
+
+                        text = lastTextPrefix + " " + text;
+                    }
+
+                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 35 V 58", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                    rulerCollection.push({ "el": createText(el_ruler, "#0372b0", "none", "0", "70", text, x1), "type": "text", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                }
+                else if (index.getTime() % pathMUnit == 0)
+                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 53", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                else
+                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 49", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+            }
+        }
+
+
+
+        function createCue(timestamp) {
+            var x1 = fromTimestampToPixel(timestamp, start.getTime());
+
+            cuepoint = { "el": createCuePathElement(el_cue, "#ff0000", "#ff0000", "2", "M 0 0 V 44", x1), "type": "path", "x1": x1, "x2": x1, "time": timestamp, "del": 0 };
+
+            cuepoint.el.onmousedown = function (event) {
+                isDragCue = true;
+
+                cueOriginalRelativeX = event.pageX - $(el_svg).offset().left;  // 相容 Firefox
+                cueOriginalX = getPageX(event);
+
+                return false; // 取消 browser 內建 drag element 功能
+            };
+
+            cb_cueChange(cuepoint.time);
+            
+        }
+
+
+        function fromTimestampToPixel(timestamp, baseTimestamp) {
+            return formatFloat((timestamp - baseTimestamp) / 1000 / theRatePixelToSecond, 2);
+        }
+
+        function formatAMPM(date) {
+            var hours = date.getHours();
+            var minutes = date.getMinutes();
+            var ampm = hours >= 12 ? 'pm' : 'am';
+
+            hours = hours % 12;
+            hours = hours ? hours : 12; // the hour '0' should be '12'
+            minutes = minutes < 10 ? '0' + minutes : minutes;
+
+            return hours + ':' + minutes + ' ' + ampm;
+        }
+
+        function rulerTextFormat(date) {
+            var text = "";
+
+            if (scale == 0) {
+                if (date.getHours())
+                    text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+            }
+            else if (scale == 1)
+                text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+            else
+                text = date.getHours().padLeft() + ":" + date.getMinutes().padLeft();
+
+            return text;
+        }
+
+        function panTo(panStart, panEnd) {
+            if (!isAnimateMotion && !isDragCue) {
+                isAnimateMotion = true;
+                var oldStart = new Date(start.getTime());
+                start = new Date(panStart.getTime());
+                end = new Date(panEnd.getTime());
+
+                ws.onmessage = function (evt) {
+                    var receivedMsg = JSON.parse(evt.data);
+                    if (wsRequestEventTimestamp == receivedMsg.wsRequestEventTimestamp) {
+                        events = receivedMsg.events;
+                        var index, x1, x2, tS, tE, w1, w2, rectStartX, rectEndX, firstPrefixTime = "", lastPrefixTime = "", text, tempDate, tagName;
+
+                        cuepoint.x2 = fromTimestampToPixel(cuepoint.time, start.getTime());
+                        var newBaseStartX = formatFloat((start.getTime() - oldStart.getTime()) / 1000 / theRatePixelToSecond, 2);
+
+                        // 計算尺規上的文字
+                        if (scale == 0) { // 5 min
+                            firstPrefixTime = start.getTime() + 30 * 1000;
+                            tempDate = new Date(firstPrefixTime);
+
+                            for (index = new Date(firstPrefixTime + pathLUnit) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathLUnit)) {
+                                if (tempDate.getDate() != index.getDate()) {
+                                    lastPrefixTime = index.getTime();
+                                    break;
+                                }
+                            }
+                        }
+                        else if (scale == 1) { // 1 hour
+                            firstPrefixTime = start.getTime() + 6 * 60 * 1000;
+                            tempDate = new Date(firstPrefixTime);
+
+                            for (index = new Date(firstPrefixTime + pathLUnit) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathLUnit)) {
+                                if (tempDate.getDate() != index.getDate()) {
+                                    lastPrefixTime = index.getTime();
+                                    break;
+                                }
+                            }
+                        }
+                        else { // 24 hours
+                            firstPrefixTime = start.getTime() + 2 * 60 * 60 * 1000;
+                            tempDate = new Date(firstPrefixTime);
+
+                            for (index = new Date(firstPrefixTime + pathLUnit) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathLUnit)) {
+                                if (tempDate.getDate() != index.getDate()) {
+                                    lastPrefixTime = index.getTime();
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 舊的 Ruler
+                        for (var i = 0; i < rulerCollection.length; i++) {
+                            var item = rulerCollection[i];
+
+                            x1 = item.x1;
+                            x2 = item.x2;
+
+                            if (start > oldStart) { // later
+                                x2 = FloatSubtraction(x2, (Math.abs(newBaseStartX)));
+
+                                if (item.time < start.getTime())
+                                    item.del = 1;
+
+                            }
+                            else { // early
+                                x2 = FloatAdd(x2, (Math.abs(newBaseStartX)));
+
+                                if (item.time > end.getTime())
+                                    item.del = 1;
+                            }
+
+                            if (item.type == "text") {
+                                var textDate = new Date(item.time);
+                                if (item.time == firstPrefixTime)
+                                    item.el.textContent = monthNames[textDate.getMonth()] + " " + textDate.getDate() + " " + formatAMPM(textDate);
+                                else if (item.time == lastPrefixTime)
+                                    item.el.textContent = monthNames[textDate.getMonth()] + " " + textDate.getDate() + " " + formatAMPM(textDate);
+                                else
+                                    item.el.textContent = formatAMPM(textDate);
+                            }
+
+                            item.x2 = x2;
+                        }
+
+                        // 新的 Ruler
+                        for (index = new Date(start.getTime()) ; index <= end; index.setMilliseconds(index.getMilliseconds() + pathSUnit)) {
+                            x2 = fromTimestampToPixel(index.getTime(), start.getTime());
+                            x1 = FloatAdd(newBaseStartX, x2);
+
+                            if ((newBaseStartX < 0 && x1 < 0) || (newBaseStartX > 0 && x1 > tlWidth)) {
+                                if (index.getTime() % pathLUnit == 0) {
+                                    text = formatAMPM(index);
+
+                                    if (index.getTime() == firstPrefixTime)
+                                        text = monthNames[index.getMonth()] + " " + index.getDate() + " " + text;
+                                    else if (index.getTime() == lastPrefixTime)
+                                        text = monthNames[index.getMonth()] + " " + index.getDate() + " " + text;
+
+                                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 35 V 58", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                                    rulerCollection.push({ "el": createText(el_ruler, "#0372b0", "none", "0", "70", text, x1), "type": "text", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                                }
+                                else if (index.getTime() % pathMUnit == 0)
+                                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 53", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                                else
+                                    rulerCollection.push({ "el": createPathElement(el_ruler, "none", "#0372b0", "1", "M 0 44 V 49", x1), "type": "path", "x1": x1, "x2": x2, "time": index.getTime(), "del": 0 });
+                            }
+                        }
+
+
+                        // 舊的 event
+                        for (var i = 0; i < eventCollection.length; i++) {
+                            var item = eventCollection[i];
+
+                            x1 = item.x1;
+                            x2 = item.x2;
+
+                            if (start > oldStart) { // later
+                                x2 = FloatSubtraction(x2, (Math.abs(newBaseStartX)));
+
+                                if (item.timeS < start.getTime())
+                                    item.del = 1;
+
+                            }
+                            else { // early
+                                x2 = FloatAdd(x2, (Math.abs(newBaseStartX)));
+
+                                if (item.timeS > end.getTime())
+                                    item.del = 1;
+                            }
+
+                            item.x2 = x2;
+                        }
+
+                        // 新的 event
+                        for (var i = 0; i < events.length; i++) {
+                            x2 = fromTimestampToPixel(events[i].start, start.getTime());
+                            x1 = FloatAdd(newBaseStartX, x2);
+
+                            if ((newBaseStartX < 0 && x1 < 0) || (newBaseStartX > 0 && x1 > tlWidth)) {
+                                rectStartX = x2;
+                                rectEndX = fromTimestampToPixel(events[i].end, start.getTime());
+                                w1 = FloatSubtraction(rectEndX, rectStartX);
+                                w2 = w1;
+
+                                var rect = createRectElement(el_event, "#d875ff", "0.5", "none", x1, "3", "6", "32");
+                                //var rect = createRectElement(el_event, "#d875ff", "0.5", "none", x1, "3", FloatSubtraction(rectEndX, rectStartX), "32");
+
+                                //rect.onmousemove = rectMousemove;
+                                rect.onclick = rectClick;
+                                
+                                eventCollection.push({ "el": rect, "x1": x1, "x2": x2, "w1": w1, "w2": w2, "del": 0, "timeS": events[i].start, "timeE": events[i].end });
+                            }
+                        }
+
+                        // 舊的 Record
+                        for (var i = 0; i < recordCollection.length; i++) {
+                            var item = recordCollection[i];
+                            rectStartX = fromTimestampToPixel(item.timeS, start.getTime());
+                            rectEndX = fromTimestampToPixel(item.timeE, start.getTime());
+                            x2 = rectStartX;
+                            w2 = FloatSubtraction(rectEndX, rectStartX);
+
+                            item.x2 = x2;
+                            item.w2 = w2;
+                        }
+
+                        execAnimate();
+                    }
+                };
+
+                wsRequestEventTimestamp = new Date().getTime();
+                var msg = {
+                    "wsRequestEventTimestamp": wsRequestEventTimestamp,
+                    "scale": 1,
+                    "start": start.getTime(),
+                    "end": end.getTime()
+                };
+                ws.send(JSON.stringify(msg));
+            }
+        }
+
+        function early() {
+            var panStart, panEnd;
+
+            if (scale == 0) {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (5 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (3 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (3 * 60 * 1000));
+
+            }
+            else if (scale == 1) {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (60 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (36 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (36 * 60 * 1000));
+
+            }
+            else {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) - (24 * 60 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (14 * 60 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (14 * 60 * 60 * 1000));
+            }
+
+            panTo(panStart, panEnd);
+        }
+        function later() {
+            var panStart, panEnd;
+
+            if (scale == 0) {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (5 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (3 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (3 * 60 * 1000));
+            }
+            else if (scale == 1) {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (60 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (36 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (36 * 60 * 1000));
+            }
+            else {
+                var rulerCenterTimestamp = (start.getTime() + (end.getTime() - start.getTime()) / 2) + (24 * 60 * 60 * 1000);
+                panStart = new Date(rulerCenterTimestamp - (14 * 60 * 60 * 1000));
+                panEnd = new Date(rulerCenterTimestamp + (14 * 60 * 60 * 1000));
+            }
+
+            panTo(panStart, panEnd);
+        }
+
+        function moveRuler(moveDate) {
+            var panStart, panEnd;
+
+            if (scale == 0) {
+                panStart = new Date(moveDate.getTime());
+                panStart.setMilliseconds(0);
+                panStart.setSeconds(0);
+                panStart.setMinutes(Math.floor(panStart.getMinutes() / 5) * 5, -30);
+
+                panEnd = new Date(moveDate.getTime());
+                panEnd.setMilliseconds(0);
+                panEnd.setSeconds(0);
+                panEnd.setMinutes(Math.floor(panEnd.getMinutes() / 5) * 5 + 5, 30);
+
+            }
+            else if (scale == 1) {
+                panStart = new Date(moveDate.getTime());
+                panStart.setMilliseconds(0);
+                panStart.setSeconds(0);
+                panStart.setMinutes(0);
+                panStart.setMinutes(-6);
+
+                panEnd = new Date(moveDate.getTime());
+                panEnd.setMilliseconds(0);
+                panEnd.setSeconds(0);
+                panEnd.setMinutes(66);
+            }
+            else {
+                panStart = new Date(moveDate.getTime());
+                panStart.setMilliseconds(0);
+                panStart.setSeconds(0);
+                panStart.setMinutes(0);
+                panStart.setHours(0);
+                panStart.setHours(-2);
+
+                panEnd = new Date(moveDate.getTime());
+                panEnd.setMilliseconds(0);
+                panEnd.setSeconds(0);
+                panEnd.setMinutes(0);
+                panEnd.setHours(0);
+                panEnd.setHours(26);
+            }
+
+            panTo(panStart, panEnd);
+        }
+
+        function createTimeline(tlContainer) {
+            // default set  (scale = 1 hour, cue time = now) -----------------------------
+            var now = new Date();
+
+            container = tlContainer;
+            scale = 1;
+            now.setMilliseconds(0);
+            tlWidth = $(container).width();
+
+            start = new Date(now.getTime());
+            start.setMilliseconds(0);
+            start.setSeconds(0);
+            start.setMinutes(0);
+            start.setMinutes(-6);
+
+            end = new Date(now.getTime());
+            end.setMilliseconds(0);
+            end.setSeconds(0);
+            end.setMinutes(66);
+
+            theRatePixelToSecond = (72 * 60) / tlWidth;
+
+            pathLUnit = 15 * 60 * 1000;
+            pathMUnit = 5 * 60 * 1000;
+            pathSUnit = 1 * 60 * 1000;
+            // ---------------------------------------------------------------------------
+
+            // websocket Event ------------------------------------------------------------------
+            ws = new WebSocket(wsURL);
+            ws.onopen = function () {
+                wsStatus = 1;
+
+                wsRequestEventTimestamp = new Date().getTime();
+                var msg = {
+                    "wsRequestEventTimestamp": wsRequestEventTimestamp,
+                    "scale": 1,
+                    "start": start.getTime(),
+                    "end": end.getTime()
+                };
+                ws.send(JSON.stringify(msg));
+            };
+            ws.onerror = function () {
+                wsStatus = 1;
+            }
+            ws.onclose = function () {
+                wsStatus = 0;
+            };
+            ws.onmessage = function (evt) {
+                var receivedMsg = JSON.parse(evt.data);
+                if (wsRequestEventTimestamp == receivedMsg.wsRequestEventTimestamp) {
+                    events = receivedMsg.events;
+                    //console.log(events.length);
+                    createRecord();
+                    createEvent();
+                }
+            };
+            // ---------------------------------------------------------------------------
+
+            createSVG();
+            createPathElement(el_ruler, "none", "#0372b0", "2", "M -300000 44 H 300000", 0, 0, "0", "0"); // Horizontal Ruler
+            createRuler();
+            createCue(now.getTime());
+
+
+            addEvent(document, "mousemove", function (event) {
+                if (isDragCue) {
+                    var deltaX = getPageX(event) - cueOriginalX;
+                    var newX = cueOriginalRelativeX + deltaX;
+
+                    cuepoint.el.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + newX + " 0)");
+                    cuepoint.x1 = newX;
+                    cuepoint.x2 = newX;
+                    cuepoint.time = start.getTime() + (newX * theRatePixelToSecond * 1000);
+
+                    cb_cueChange(cuepoint.time);
+                }
+            });
+            addEvent(document, "mouseup", function (event) {
+                isDragCue = false;
+
+                cb_cueChange(cuepoint.time);
+            });
+        }
+
+        function cb_cueChange(timestamp) {
+            $("#CueDate").val(new Date(timestamp));
+        }
+
+        function createSVG() {
+            el_svg = document.createElementNS(NS, "svg");
+            el_svg.setAttributeNS(null, "class", "Timeline");
+            el_svg.setAttributeNS(null, "width", tlWidth);
+            el_svg.setAttributeNS(null, "height", "72");
+            el_svg.setAttributeNS(null, "version", "1.1");
+            el_svg.setAttributeNS(null, "viewBox", "0 0 " + tlWidth + " 72");
+
+            container.appendChild(el_svg);
+
+            el_ruler = document.createElementNS(NS, "g");
+            el_svg.appendChild(el_ruler);
+
+            el_record = document.createElementNS(NS, "g");
+            el_svg.appendChild(el_record);
+
+            el_event = document.createElementNS(NS, "g");
+            el_svg.appendChild(el_event);
+
+            el_cue = document.createElementNS(NS, "g");
+            el_svg.appendChild(el_cue);
+        }
+
+        function createRectElement(container, fill, fillOpacity, stroke, x, y, width, height) {
+            var rect = document.createElementNS(NS, "rect");
+
+            if (width < 1)
+                width = 1;
+            rect.setAttributeNS(null, "fill", fill);
+            rect.setAttributeNS(null, "fill-opacity", fillOpacity);
+            rect.setAttributeNS(null, "stroke", stroke);
+            rect.setAttributeNS(null, "x", "0");
+            rect.setAttributeNS(null, "y", y);
+            rect.setAttributeNS(null, "width", width);
+            rect.setAttributeNS(null, "height", height);
+            rect.setAttributeNS(null, "style", "cursor: pointer;");
+            rect.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x + " 0)");
+
+            container.appendChild(rect);
+
+            return rect;
+        }
+
+        function createPathElement(container, fill, stroke, strokeWidth, d, x1) {
+            var path = document.createElementNS(NS, "path");
+
+            path.setAttributeNS(null, "fill", fill);
+            path.setAttributeNS(null, "stroke", stroke);
+            path.setAttributeNS(null, "stroke-width", strokeWidth);
+            path.setAttributeNS(null, "d", d);
+            path.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+
+            container.appendChild(path);
+
+            return path;
+        }
+
+        function createCuePathElement(container, fill, stroke, strokeWidth, d, x1) {
+            var path = document.createElementNS(NS, "path");
+
+            path.setAttributeNS(null, "fill", fill);
+            path.setAttributeNS(null, "stroke", stroke);
+            path.setAttributeNS(null, "stroke-width", strokeWidth);
+            path.setAttributeNS(null, "d", d);
+            path.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+            path.setAttributeNS(null, "style", "cursor: ew-resize");
+
+            container.appendChild(path);
+
+            return path;
+        }
+
+        function createText(container, fill, stroke, x, y, content, x1) {
+            var text = document.createElementNS(NS, "text");
+
+            text.setAttributeNS(null, "fill", fill);
+            text.setAttributeNS(null, "class", "TimelineText");
+            text.setAttributeNS(null, "stroke", stroke);
+            text.setAttributeNS(null, "x", x);
+            text.setAttributeNS(null, "y", y);
+            text.setAttributeNS(null, "transform", "matrix(1 0 0 1 " + x1 + " 0)");
+            text.textContent = content;
+
+            container.appendChild(text);
+
+            return text;
+        }
+
+        function addEvent(el, eventType, handler) {
+            if (el.addEventListener)  // DOM Level 2 browsers
+                el.addEventListener(eventType, handler, false);
+            else if (el.attachEvent) // IE <= 8
+                el.attachEvent('on' + eventType, handler);
+            else // ancient browsers
+                el['on' + eventType] = handler;
+        }
+
+        Number.prototype.padLeft = function (base, chr) {
+            var len = (String(base || 10).length - String(this).length) + 1;
+            return len > 0 ? new Array(len).join(chr || '0') + this : this;
+        }
+
+        if (!Date.now) {
+            Date.now = function now() {
+                return new Date().getTime();
+            };
+        }
+
+        function getPageX(event) {
+            var dot, eventDoc, doc, body, pageX;
+            event = event || window.event; // IE-ism
+
+            if (event.pageX == null && event.clientX != null) {
+                eventDoc = (event.target && event.target.ownerDocument) || document;
+                doc = eventDoc.documentElement;
+                body = eventDoc.body;
+
+                event.pageX = event.clientX +
+                  (doc && doc.scrollLeft || body && body.scrollLeft || 0) -
+                  (doc && doc.clientLeft || body && body.clientLeft || 0);
+            }
+            return event.pageX;
+        }
+
+        function formatFloat(num, pos) {
+            var size = Math.pow(10, pos);
+            return Math.round(num * size) / size;
+        }
+
+        //浮點數相加
+        function FloatAdd(arg1, arg2) {
+            var r1, r2, m;
+            try { r1 = arg1.toString().split(".")[1].length; } catch (e) { r1 = 0; }
+            try { r2 = arg2.toString().split(".")[1].length; } catch (e) { r2 = 0; }
+            m = Math.pow(10, Math.max(r1, r2));
+            return (FloatMul(arg1, m) + FloatMul(arg2, m)) / m;
+        }
+        //浮點數相減
+        function FloatSubtraction(arg1, arg2) {
+            var r1, r2, m, n;
+            try { r1 = arg1.toString().split(".")[1].length } catch (e) { r1 = 0 }
+            try { r2 = arg2.toString().split(".")[1].length } catch (e) { r2 = 0 }
+            m = Math.pow(10, Math.max(r1, r2));
+            n = (r1 >= r2) ? r1 : r2;
+            return ((arg1 * m - arg2 * m) / m).toFixed(n);
+        }
+        //浮點數相乘
+        function FloatMul(arg1, arg2) {
+            var m = 0, s1 = arg1.toString(), s2 = arg2.toString();
+            try { m += s1.split(".")[1].length; } catch (e) { }
+            try { m += s2.split(".")[1].length; } catch (e) { }
+            return Number(s1.replace(".", "")) * Number(s2.replace(".", "")) / Math.pow(10, m);
+        }
+        //浮點數相除
+        function FloatDiv(arg1, arg2) {
+            var t1 = 0, t2 = 0, r1, r2;
+            try { t1 = arg1.toString().split(".")[1].length } catch (e) { }
+            try { t2 = arg2.toString().split(".")[1].length } catch (e) { }
+            with (Math) {
+                r1 = Number(arg1.toString().replace(".", ""))
+                r2 = Number(arg2.toString().replace(".", ""))
+                return (r1 / r2) * pow(10, t2 - t1);
+            }
+        }
+
+        (function () {
+            var requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame ||
+                                        window.webkitRequestAnimationFrame || window.msRequestAnimationFrame;
+            window.requestAnimationFrame = requestAnimationFrame;
+        })();
+    </script>
+
+</body>
+</html>
